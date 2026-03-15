@@ -1,7 +1,7 @@
 /**
  * Google Drive "ScanSnap" folder watcher -> Discord notifier
  * - Polls the target folder for new files since the last check
- * - Posts a message to a Discord channel via Webhook
+ * - Posts a rich embed message to a Discord channel via Webhook
  *
  * Setup flow:
  * 1) Set Script Properties: FOLDER_ID and DISCORD_WEBHOOK_URL.
@@ -18,6 +18,9 @@ const PROP_KEYS = {
 
 /** Maximum number of pages to fetch per run (100 files/page × 10 = 1,000 files max). */
 const MAX_PAGES = 10;
+
+/** Maximum Discord webhook retry attempts on rate-limit (429). */
+const MAX_WEBHOOK_RETRIES = 3;
 
 /**
  * One-time configuration.
@@ -49,7 +52,7 @@ function setConfig() {
   );
 
   installTrigger();
-  Logger.log(
+  console.log(
     "Configuration verified from Script Properties. Baseline set to %s. Trigger installed.",
     now,
   );
@@ -79,12 +82,14 @@ function installTrigger() {
  * Error handling: on Discord failure the run aborts without advancing LAST_CHECK,
  *   so the failed file is retried on the next trigger while already-delivered
  *   files are protected by PROCESSED_IDS.
+ * Truncation: when MAX_PAGES is reached, LAST_CHECK is not advanced so the
+ *   remaining files in the same time window are retried on the next run.
  */
 function checkForNewFiles() {
   // Prevent concurrent executions (e.g. overlapping 5-min triggers)
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(0)) {
-    Logger.log("Another instance is already running. Skipping this execution.");
+    console.log("Another instance is already running. Skipping this execution.");
     return;
   }
 
@@ -112,13 +117,13 @@ function checkForNewFiles() {
     if (raw) {
       try {
         processed = JSON.parse(raw) || [];
-      } catch (e) {
+      } catch (_) {
         processed = [];
       }
     }
 
     const query = `('${folderId}' in parents) and trashed = false and createdTime > '${lastCheck}'`;
-    const newFiles = listAllFiles(query);
+    const { files: newFiles, truncated } = listAllFiles(query);
 
     // Post in chronological order; abort on first Discord error so the failed
     // file is retried next run (LAST_CHECK is not advanced on error).
@@ -136,15 +141,13 @@ function checkForNewFiles() {
       if (processed.length > 200) {
         processed = processed.slice(-200);
       }
-      // Small delay to be gentle with Discord rate limits
-      Utilities.sleep(200);
     }
 
     props.setProperties(
       {
-        // Do not advance LAST_CHECK if Discord failed; the failed file will be
-        // retried next run while already-delivered files are skipped via PROCESSED_IDS.
-        [PROP_KEYS.LAST_CHECK]: hasError ? lastCheck : now,
+        // Do not advance LAST_CHECK when Discord failed or MAX_PAGES was reached;
+        // the unprocessed files will be retried on the next run.
+        [PROP_KEYS.LAST_CHECK]: hasError || truncated ? lastCheck : now,
         [PROP_KEYS.PROCESSED_IDS]: JSON.stringify(processed),
       },
       false,
@@ -155,26 +158,30 @@ function checkForNewFiles() {
 }
 
 /**
- * Helper: list files with paging, ordered by createdTime asc.
+ * Lists files matching the query, ordered by createdTime asc.
  * Stops after MAX_PAGES pages to avoid exceeding the 6-minute execution limit.
+ *
+ * @returns {{ files: object[], truncated: boolean }}
  */
 function listAllFiles(q) {
   const files = [];
   let pageToken;
   let pages = 0;
+  let truncated = false;
   do {
     if (pages >= MAX_PAGES) {
-      Logger.log(
+      console.warn(
         "listAllFiles: MAX_PAGES (%d) に達しました。残りのファイルは次回実行時に処理されます。",
         MAX_PAGES,
       );
+      truncated = true;
       break;
     }
     const resp = Drive.Files.list({
       q,
       orderBy: "createdTime asc",
       pageSize: 100,
-      fields: "nextPageToken, files(id,name,createdTime,webViewLink,mimeType,size,iconLink)",
+      fields: "nextPageToken, files(id,name,createdTime,webViewLink,mimeType,size)",
       pageToken,
     });
     if (resp && resp.files && resp.files.length) {
@@ -183,11 +190,13 @@ function listAllFiles(q) {
     pageToken = resp.nextPageToken;
     pages++;
   } while (pageToken);
-  return files;
+  return { files, truncated };
 }
 
 /**
- * Posts a simple message to Discord via webhook.
+ * Posts a rich embed message to Discord via webhook.
+ * Retries up to MAX_WEBHOOK_RETRIES times on rate-limit (HTTP 429),
+ * respecting the Retry-After response header.
  */
 function postToDiscord(webhookUrl, file) {
   const createdJst = Utilities.formatDate(
@@ -195,18 +204,65 @@ function postToDiscord(webhookUrl, file) {
     "Asia/Tokyo",
     "yyyy-MM-dd HH:mm:ss",
   );
-  const content = `📄 新しいファイル: ${file.name}\n🕒 ${createdJst} JST\n🔗 ${file.webViewLink}`;
+
+  const fields = [
+    { name: "📅 作成日時", value: `${createdJst} JST`, inline: true },
+  ];
+  if (file.size) {
+    fields.push({ name: "📦 サイズ", value: formatFileSize(Number(file.size)), inline: true });
+  }
+
+  const embed = {
+    title: file.name,
+    url: file.webViewLink,
+    color: 0x5865f2, // Discord Blurple
+    fields,
+    footer: { text: "ScanSnap Drive Watcher" },
+    timestamp: file.createdTime,
+  };
+
   const options = {
     method: "post",
     contentType: "application/json",
-    payload: JSON.stringify({ content }),
+    payload: JSON.stringify({ embeds: [embed] }),
     muteHttpExceptions: true,
   };
-  const resp = UrlFetchApp.fetch(webhookUrl, options);
-  const code = resp.getResponseCode();
-  if (code >= 300) {
-    throw new Error(`Discord webhook error ${code}: ${resp.getContentText()}`);
+
+  for (let attempt = 0; attempt < MAX_WEBHOOK_RETRIES; attempt++) {
+    const resp = UrlFetchApp.fetch(webhookUrl, options);
+    const code = resp.getResponseCode();
+
+    if (code === 429) {
+      const headers = resp.getHeaders();
+      const retryAfterSec = Number(headers["Retry-After"] || headers["retry-after"] || 1);
+      console.warn(
+        "Discord rate limit (429). Retry-After: %d s (attempt %d/%d)",
+        retryAfterSec,
+        attempt + 1,
+        MAX_WEBHOOK_RETRIES,
+      );
+      Utilities.sleep(retryAfterSec * 1000 + 100);
+      continue;
+    }
+
+    if (code >= 300) {
+      throw new Error(`Discord webhook error ${code}: ${resp.getContentText()}`);
+    }
+
+    Utilities.sleep(200); // gentle delay between consecutive posts
+    return;
   }
+
+  throw new Error("Discord webhook: max retries exceeded due to rate limiting.");
+}
+
+/**
+ * Formats a byte count into a human-readable string (B / KB / MB).
+ */
+function formatFileSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /**
@@ -220,7 +276,7 @@ function manualCheck() {
  * Quick helper to print guidance in the logs.
  */
 function help() {
-  Logger.log("Set Script Properties: FOLDER_ID / DISCORD_WEBHOOK_URL.");
-  Logger.log("Then run setConfig() once to initialize and install trigger.");
-  Logger.log("Use manualCheck() to test.");
+  console.log("Set Script Properties: FOLDER_ID / DISCORD_WEBHOOK_URL.");
+  console.log("Then run setConfig() once to initialize and install trigger.");
+  console.log("Use manualCheck() to test.");
 }
