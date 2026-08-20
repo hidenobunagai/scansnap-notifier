@@ -54,7 +54,7 @@ Google Drive の特定フォルダ（例: ScanSnap の保存先）に新規フ�
    - エディタの関数選択で `setConfig` を選び「実行」
    - 初回実行でベースライン（現在時刻）を保存し、5 分間隔のトリガーをセットします
 3. 動作確認
-   - 必要に応じて `manualCheck` を手動実行し、エラーがないか確認
+   - 必要に応じて `checkForNewFiles` を手動実行し、エラーがないか確認
 
 ## 仕組み（主要関数）
 
@@ -62,8 +62,7 @@ Google Drive の特定フォルダ（例: ScanSnap の保存先）に新規フ�
 - `installTrigger()`: `checkForNewFiles` を 5 分間隔で実行するトリガーを 1 つだけ維持
 - `checkForNewFiles()`: 前回以降に作成された新規ファイルを Drive v3 で列挙し Discord / LINE へ通知
 - `postToDiscord()`: Discord Webhook へ embed 投稿（429 リトライ付き）
-- `postToLineInChunks()` / `postToLine()`: LINE Messaging API へチャンク分割で push 送信（429 リトライ付き）
-- `manualCheck()`: `checkForNewFiles()` の手動実行ヘルパー
+- `postToLine()`: LINE Messaging API へ push 送信（429 リトライ付き、1回あたり最大5件）
 
 ## 必要な権限 / スコープ
 
