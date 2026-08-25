@@ -1,4 +1,4 @@
-# ScanSnap → Discord / LINE Notifier (GAS + clasp)
+# ScanSnap Notifier (GAS + clasp)
 
 Google Drive の特定フォルダ（例: ScanSnap の保存先）に新規ファイルが追加されたら、Discord のチャンネルへ Webhook 通知、および LINE Messaging API で push 通知する Google Apps Script プロジェクトです。clasp を用いてローカルから管理・デプロイします。Discord / LINE はそれぞれ個別に有効化でき、両方同時にも送信可能です。
 
@@ -32,7 +32,7 @@ Google Drive の特定フォルダ（例: ScanSnap の保存先）に新規フ�
    - PowerShell 例: `Copy-Item .clasp.example.json .clasp.json`
    - `.clasp.json` の `scriptId` を自身のスクリプト ID に置き換える
    - まだスクリプトを持っていない場合は新規作成:
-     `clasp create --type standalone --title "ScanSnap Discord Notifier" --rootDir ./src`
+     `clasp create --type standalone --title "ScanSnap Notifier" --rootDir ./src`
 3. コードとマニフェストを push
    - `clasp push`
 4. スクリプトエディタを開く（確認用）
