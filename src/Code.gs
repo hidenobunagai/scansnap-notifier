@@ -253,3 +253,52 @@ function fetchWithRetry(url, params, maxRetries, fatalCodes) {
   }
   throw new Error("Max retries exceeded due to rate limiting.");
 }
+
+// ===== 設定検証ユーティリティ =====
+/**
+ * 現在のセットアップ状態を検証し、結果を返します。
+ * 家族が「なぜ通知が届かないのか」を診断するのに便利です。
+ *
+ * @returns {{ready: boolean, warnings: string[], config: object}}
+ */
+function validateSetup() {
+  const warnings = [];
+  const config = {};
+
+  const props = PropertiesService.getScriptProperties();
+
+  // フォルダID
+  const folderId = (props.getProperty("FOLDER_ID") || "").trim();
+  config.folderConfigured = !!folderId;
+  if (!folderId) {
+    warnings.push("FOLDER_ID が未設定です。setConfig() を実行してください。");
+  }
+
+  // Discord設定
+  const discordWebhookUrl = (props.getProperty("DISCORD_WEBHOOK_URL") || "").trim();
+  config.discordConfigured = !!discordWebhookUrl;
+
+  // LINE設定
+  const lineChannelAccessToken = (props.getProperty("LINE_CHANNEL_ACCESS_TOKEN") || "").trim();
+  const lineTargetId = (props.getProperty("LINE_TARGET_ID") || "").trim();
+  config.lineConfigured = !!(lineChannelAccessToken && lineTargetId);
+
+  // 通知先の確認
+  if (!config.discordConfigured && !config.lineConfigured) {
+    warnings.push("通知先が未設定です。Discord または LINE のいずれかを設定してください。");
+  }
+
+  // トリガー状態
+  const triggers = ScriptApp.getProjectTriggers();
+  const hasTrigger = triggers.some(t => t.getHandlerFunction() === "checkForNewFiles");
+  config.triggerActive = hasTrigger;
+  if (!hasTrigger) {
+    warnings.push("5分間隔のトリガーが未設定です。setConfig() を実行してください。");
+  }
+
+  return {
+    ready: warnings.length === 0,
+    warnings: warnings,
+    config: config,
+  };
+}
