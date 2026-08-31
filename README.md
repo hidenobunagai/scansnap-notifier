@@ -2,6 +2,15 @@
 
 Google Drive の特定フォルダ（例: ScanSnap の保存先）に新規ファイルが追加されたら、Discord のチャンネルへ Webhook 通知、および LINE Messaging API で push 通知する Google Apps Script プロジェクトです。clasp を用いてローカルから管理・デプロイします。Discord / LINE はそれぞれ個別に有効化でき、両方同時にも送信可能です。
 
+## 動作フロー図
+
+セットアップから定期監視・通知・状態更新までの全体フローです。画像をクリックするとインタラクティブ版（テーマ切替 / ズーム / 検索 / 関係性トレース）が開きます。
+
+[![ScanSnap Notifier 動作フロー](docs/archify/scansnap-notifier-flow.capture.png)](docs/archify/scansnap-notifier-flow.html)
+
+- [インタラクティブ図 (HTML)](docs/archify/scansnap-notifier-flow.html)
+- [図の仕様 (JSON)](docs/archify/scansnap-notifier-workflow.json) — 再生成: `archify deliver workflow docs/archify/scansnap-notifier-workflow.json docs/archify/scansnap-notifier-flow.html --quality showcase`
+
 ## 特長 / 動作概要
 
 - 新規ファイルのみ通知: 初回にベースラインを現在時刻へ設定し、既存ファイルは通知しません。
