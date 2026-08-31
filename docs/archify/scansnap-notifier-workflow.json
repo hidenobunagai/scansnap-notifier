@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "ScanSnap Notifier 動作フロー",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    { "id": "setup", "label": "セットアップ" },
+    { "id": "runtime", "label": "GAS ランタイム" },
+    { "id": "drive", "label": "Google Drive" },
+    { "id": "notify", "label": "通知チャネル" },
+    { "id": "exceptions", "label": "例外処理", "variant": "exception" }
+  ],
+  "mainPath": ["trigger", "check", "drive", "newfile", "discord", "line", "commit"],
+  "nodes": [
+    { "id": "props", "lane": "setup", "col": 2, "type": "database", "label": "Script Properties", "sublabel": "FOLDER_ID / 通知先 / 状態", "width": 125 },
+    { "id": "setconfig", "lane": "setup", "col": 0, "type": "backend", "label": "setConfig()", "sublabel": "初期化 + トリガー", "tag": "初回のみ手動実行" },
+    { "id": "trigger", "lane": "runtime", "col": 0, "type": "cloud", "label": "時間トリガー", "sublabel": "5 分間隔" },
+    { "id": "check", "lane": "runtime", "col": 1, "type": "backend", "label": "checkForNewFiles()", "sublabel": "ロック取得 + 設定検証", "tag": "LockService", "width": 130 },
+    { "id": "drive", "lane": "drive", "col": 2, "type": "cloud", "label": "Google Drive v3", "sublabel": "ScanSnap 保存先フォルダ", "width": 112 },
+    { "id": "newfile", "lane": "drive", "col": 3, "type": "backend", "label": "新規ファイル走査", "sublabel": "PROCESSED_IDS で重複スキップ", "width": 120 },
+    { "id": "discord", "lane": "notify", "col": 4, "type": "external", "label": "Discord", "sublabel": "Webhook embed 投稿", "brand": "discord", "width": 115 },
+    { "id": "line", "lane": "notify", "col": 5, "type": "external", "label": "LINE", "sublabel": "Messaging API push", "width": 108 },
+    { "id": "skip", "lane": "exceptions", "col": 1, "type": "security", "label": "ロック競合", "sublabel": "重複時はスキップ" },
+    { "id": "error", "lane": "exceptions", "col": 4, "type": "security", "label": "送信エラー", "sublabel": "次回実行で再送" },
+    { "id": "commit", "lane": "runtime", "col": 5, "type": "backend", "label": "状態確定", "sublabel": "成功時のみ状態更新" }
+  ],
+  "edges": [
+    { "id": "e-trigger-check", "from": "trigger", "to": "check", "label": "5 分毎に起動", "variant": "emphasis", "role": "main", "fromSide": "bottom", "toSide": "bottom", "route": "bottom-channel", "channelY": 290, "labelDy": 18 },
+    { "id": "e-setconfig-trigger", "from": "setconfig", "to": "trigger", "label": "installTrigger()", "variant": "dashed", "role": "branch", "labelAt": [160, 200] },
+    { "id": "e-setconfig-props", "from": "setconfig", "to": "props", "label": "ベースライン初期化", "variant": "dashed", "role": "branch", "fromSide": "bottom", "toSide": "bottom", "route": "bottom-channel", "labelAt": [275, 200] },
+    { "id": "e-check-props", "from": "check", "to": "props", "label": "LAST_CHECK 読込", "variant": "dashed", "role": "branch" },
+    { "id": "e-check-drive", "from": "check", "to": "drive", "label": "Drive v3 クエリ", "role": "main", "fromSide": "right", "toSide": "top", "labelAt": [345, 325] },
+    { "id": "e-drive-newfile", "from": "drive", "to": "newfile", "label": "新規ファイル一覧", "role": "main", "fromSide": "top", "toSide": "top", "route": "up-channel", "channelY": 290 },
+    { "id": "e-newfile-discord", "from": "newfile", "to": "discord", "label": "新規ファイルを通知", "role": "main" },
+    { "id": "e-discord-line", "from": "discord", "to": "line", "label": "LINE へも通知", "role": "main", "fromSide": "bottom", "toSide": "bottom", "route": "bottom-channel", "channelY": 535 },
+    { "id": "e-line-commit", "from": "line", "to": "commit", "label": "送信成功", "role": "main" },
+    { "id": "e-check-skip", "from": "check", "to": "skip", "label": "ロック取得失敗", "variant": "security", "role": "error", "route": "straight", "labelAt": [220, 470] },
+    { "id": "e-discord-error", "from": "discord", "to": "error", "label": "送信失敗", "variant": "security", "role": "error", "labelAt": [500, 560] },
+    { "id": "e-line-error", "from": "line", "to": "error", "label": "送信失敗", "variant": "security", "role": "error" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "初回セットアップ",
+      "items": [
+        "Script Properties に FOLDER_ID と通知先を設定",
+        "setConfig() 実行でベースライン（現在時刻）を保存",
+        "既存ファイルは通知せず、以後の新規のみ通知",
+        "5 分間隔のトリガーが 1 つだけ登録される"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "信頼性設計",
+      "items": [
+        "LockService で重複実行を防止",
+        "429 レートリミットは Retry-After に従い再試行",
+        "通知失敗時は LAST_CHECK を進めず、次回実行で再送",
+        "PROCESSED_IDS（最大200件）で二重通知を防止"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "通知チャネル",
+      "items": [
+        "Discord: Webhook で embed 投稿（作成日時・サイズ・リンク）",
+        "LINE: Messaging API で push 送信（最大 5 件/回）",
+        "どちらか一方のみ・両方同時のどちらも利用可能",
+        "validateSetup() で通知未達の原因を診断"
+      ]
+    }
+  ]
+}
