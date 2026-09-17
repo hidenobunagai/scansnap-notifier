@@ -15,6 +15,8 @@
 const MAX_WEBHOOK_RETRIES = 3;
 const LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push";
 const LINE_RETRIES = 3;
+// Total retry sleep budget per request to respect GAS 6-minute per-execution limit.
+const MAX_RETRY_SLEEP_MS = 30 * 1000;
 
 /**
  * One-time configuration.
@@ -185,7 +187,7 @@ function listAllFiles(q) {
 }
 
 /**
- * Posts a rich embed message to Discord via webhook, retrying on rate-limit (429).
+ * Posts a rich embed message to Discord via webhook (429/5xx retry).
  */
 function postToDiscord(webhookUrl, file) {
   const createdJst = Utilities.formatDate(new Date(file.createdTime), "Asia/Tokyo", "yyyy-MM-dd HH:mm:ss");
@@ -250,10 +252,13 @@ function postToLine(channelAccessToken, targetId, messages) {
 }
 
 /**
- * UrlFetch with 429 retry + Retry-After honoring. 2xx returns the response;
- * fatalCodes throw immediately (no retry); any other non-2xx throws after retries.
+ * UrlFetch with 429/5xx retry + Retry-After honoring. 2xx returns the response;
+ * fatalCodes and any other non-2xx throw immediately. Retries back off
+ * exponentially 1s -> 2s -> 4s unless Retry-After says otherwise, and give up
+ * once the per-request sleep budget MAX_RETRY_SLEEP_MS is used up.
  */
 function fetchWithRetry(url, params, maxRetries, fatalCodes) {
+  let accumulatedSleepMs = 0;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const resp = UrlFetchApp.fetch(url, params);
     const code = resp.getResponseCode();
@@ -261,16 +266,32 @@ function fetchWithRetry(url, params, maxRetries, fatalCodes) {
     if (fatalCodes && fatalCodes.includes(code)) {
       throw new Error(`Fatal HTTP ${code}: ${resp.getContentText()}`);
     }
-    if (code === 429) {
-      const headers = resp.getHeaders();
-      const retryAfter = headers["Retry-After"] || headers["retry-after"] || 1;
-      console.warn("Rate limit (429). Retry-After: %d s (attempt %d/%d)", retryAfter, attempt + 1, maxRetries);
-      Utilities.sleep(Number(retryAfter) * 1000 + 100);
-      continue;
+
+    const isRetryable = code === 429 || (code >= 500 && code < 600);
+    if (!isRetryable || attempt === maxRetries - 1) {
+      throw new Error(`HTTP ${code}: ${resp.getContentText()}`);
     }
-    throw new Error(`HTTP ${code}: ${resp.getContentText()}`);
+
+    const headers = resp.getHeaders();
+    const retryAfter = headers["Retry-After"] || headers["retry-after"];
+    let delayMs;
+    if (retryAfter && !isNaN(Number(retryAfter))) {
+      delayMs = Number(retryAfter) * 1000 + 100;
+    } else if (code === 429) {
+      delayMs = 1100;
+    } else {
+      delayMs = 1000 * Math.pow(2, attempt);
+    }
+
+    if (accumulatedSleepMs + delayMs > MAX_RETRY_SLEEP_MS) {
+      throw new Error(`HTTP ${code}: ${resp.getContentText()}`);
+    }
+
+    console.warn("HTTP %d: retrying in %d ms, attempt %d/%d", code, delayMs, attempt + 1, maxRetries);
+    Utilities.sleep(delayMs);
+    accumulatedSleepMs += delayMs;
   }
-  throw new Error("Max retries exceeded due to rate limiting.");
+  throw new Error("fetchWithRetry requires maxRetries >= 1");
 }
 
 // ===== 設定検証ユーティリティ =====

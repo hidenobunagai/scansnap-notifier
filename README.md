@@ -78,8 +78,8 @@ bun run check
 - `setConfig()`: スクリプト プロパティの検証、ベースライン保存、トリガー登録
 - `installTrigger()`: `checkForNewFiles` を 5 分間隔で実行するトリガーを 1 つだけ維持
 - `checkForNewFiles()`: 前回以降に作成された新規ファイルを Drive v3 で列挙し Discord / LINE へ通知
-- `postToDiscord()`: Discord Webhook へ embed 投稿（429 リトライ付き）
-- `postToLine()`: LINE Messaging API へ push 送信（429 リトライ付き、1回あたり最大5件）
+- `postToDiscord()`: Discord Webhook へ embed 投稿（429/5xx リトライ付き）
+- `postToLine()`: LINE Messaging API へ push 送信（429/5xx リトライ付き、1回あたり最大5件）
 
 ## 必要な権限 / スコープ
 
