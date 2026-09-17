@@ -62,6 +62,7 @@ function installTrigger() {
  * Errors: a Discord failure aborts before advancing LAST_CHECK, so the failed
  *   file is retried next run while already-delivered files are protected by PROCESSED_IDS.
  * LINE is sent after Discord in batches of <=5 messages (the Messaging API cap).
+ *   A LINE failure is logged only; it never blocks state persistence.
  */
 function checkForNewFiles() {
   const lock = LockService.getScriptLock();
@@ -107,7 +108,9 @@ function checkForNewFiles() {
     const query = `('${folderId}' in parents) and trashed = false and createdTime > '${lastCheck}'`;
     const newFiles = listAllFiles(query);
 
-    let hasError = false;
+    // Tracks Discord delivery only: it holds LAST_CHECK back so the failed file is
+    // retried next run. LINE failures must never block the state save below.
+    let discordFailed = false;
     const lineMessages = [];
     for (const f of newFiles) {
       if (processed.includes(f.id)) continue;
@@ -117,7 +120,7 @@ function checkForNewFiles() {
           postToDiscord(webhook, f);
         } catch (e) {
           console.error("Discord への通知に失敗しました (id=%s): %s", f.id, e.message);
-          hasError = true;
+          discordFailed = true;
           break;
         }
       }
@@ -128,15 +131,31 @@ function checkForNewFiles() {
       if (processed.length > 200) processed = processed.slice(-200);
     }
 
-    if (hasLine && !hasError && lineMessages.length) {
+    // LINE delivery is independent of the Discord outcome, so messages collected
+    // before an early Discord break are still sent. A LINE failure is logged and
+    // swallowed: letting it escape would skip the property save below, and the next
+    // run would re-post every already-sent file to Discord — every 5 min for as long
+    // as the LINE token stays expired.
+    // ponytail: LINE failures are log-only, so a file that never reached LINE is not
+    // retried for LINE, because PROCESSED_IDS already marks it done. True LINE-only
+    // retry needs a second cursor, e.g. LINE_LAST_CHECK, so the Drive query still
+    // returns the file, plus LINE_SENT_IDS with PROCESSED_IDS treated as already-sent
+    // for migration.
+    if (hasLine && lineMessages.length) {
       for (let i = 0; i < lineMessages.length; i += 5) {
-        postToLine(lineToken, lineTargetId, lineMessages.slice(i, i + 5));
+        const batch = lineMessages.slice(i, i + 5);
+        try {
+          postToLine(lineToken, lineTargetId, batch);
+        } catch (e) {
+          console.error("LINE への通知に失敗しました (%d件): %s", batch.length, e.message);
+        }
       }
     }
 
-    // Do not advance LAST_CHECK on error; unprocessed files retry next run.
+    // Do not advance LAST_CHECK on a Discord error; that file retries next run while
+    // already-delivered files are protected by PROCESSED_IDS.
     props.setProperties(
-      { LAST_CHECK: hasError ? lastCheck : now, PROCESSED_IDS: JSON.stringify(processed) },
+      { LAST_CHECK: discordFailed ? lastCheck : now, PROCESSED_IDS: JSON.stringify(processed) },
       false,
     );
   } finally {
