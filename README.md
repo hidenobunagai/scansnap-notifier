@@ -71,7 +71,8 @@ bun run check
    - エディタの関数選択で `setConfig` を選び「実行」
    - 初回実行でベースライン（現在時刻）を保存し、5 分間隔のトリガーをセットします
 3. 動作確認
-   - 必要に応じて `checkForNewFiles` を手動実行し、エラーがないか確認
+   - まず `validateSetup` を実行し、実行ログの `ready` と `warnings` を確認（未設定・トリガー欠落があれば理由が出ます）
+   - 続いて必要に応じて `checkForNewFiles` を手動実行し、エラーがないか確認
 
 ## 仕組み（主要関数）
 
@@ -80,6 +81,7 @@ bun run check
 - `checkForNewFiles()`: 前回以降に作成された新規ファイルを Drive v3 で列挙し Discord / LINE へ通知
 - `postToDiscord()`: Discord Webhook へ embed 投稿（429/5xx リトライ付き）
 - `postToLine()`: LINE Messaging API へ push 送信（429/5xx リトライ付き、1回あたり最大5件）
+- `validateSetup()`: スクリプト プロパティとトリガーの状態を検証し、`ready` / `warnings` / `config` を実行ログに出力（通知が来ないときの一次診断）
 
 ## 必要な権限 / スコープ
 
@@ -116,6 +118,7 @@ bun run check
 
 ## トラブルシュート
 
+- 通知が来ない（Discord / LINE 共通）: まず `validateSetup` を実行し、実行ログの `ready` / `warnings` を確認。`warnings` に未設定の理由が出ていればそれに従って直す（`ready` が `true` なのに届かない場合は以下を確認）。
 - Discord に投稿されない: Webhook URL、権限付与、`FOLDER_ID` の設定を再確認。
 - LINE に通知されない: `LINE_CHANNEL_ACCESS_TOKEN` / `LINE_TARGET_ID` の設定、公式アカウントの友だち追加状態を再確認。実行ログに `LINE への通知に失敗しました` が出ていないか確認。
 - LINE 401 Unauthorized: チャネルアクセストークンが不正または期限切れ。再発行してスクリプト プロパティを更新。

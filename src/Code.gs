@@ -336,9 +336,8 @@ function validateSetup() {
     warnings.push("5分間隔のトリガーが未設定です。setConfig() を実行してください。");
   }
 
-  return {
-    ready: warnings.length === 0,
-    warnings: warnings,
-    config: config,
-  };
+  const result = { ready: warnings.length === 0, warnings: warnings, config: config };
+  // エディタから手動実行しただけでは戻り値が見えないため、実行ログにも結果を出す
+  console.log("validateSetup: %s", JSON.stringify(result));
+  return result;
 }
