@@ -1,6 +1,6 @@
 # ScanSnap Notifier (GAS + clasp)
 
-Google Drive の特定フォルダ（例: ScanSnap の保存先）に新規ファイルが追加されたら、Discord のチャンネルへ Webhook 通知、および LINE Messaging API で push 通知する Google Apps Script プロジェクトです。clasp を用いてローカルから管理・デプロイします。Discord / LINE はそれぞれ個別に有効化でき、両方同時にも送信可能です。
+Google Drive の特定フォルダ（例: ScanSnap の保存先）に新規ファイルが追加されたら、LINE Messaging API で push 通知する Google Apps Script プロジェクトです。clasp を用いてローカルから管理・デプロイします。
 
 ## 動作フロー図
 
@@ -15,9 +15,7 @@ Google Drive の特定フォルダ（例: ScanSnap の保存先）に新規フ�
 
 - 新規ファイルのみ通知: 初回にベースラインを現在時刻へ設定し、既存ファイルは通知しません。
 - 5 分間隔で監視: 時間主導トリガーを 5 分おきに実行し新規を検出します。
-- Discord へ簡潔に投稿: ファイル名、作成時刻（JST）、webViewLink を送信します。
-- LINE へも通知: ファイル名、作成日時、サイズ、リンクをプレーンテキストで送信します。
-- Discord / LINE 個別有効化: どちらか一方、または両方を同時に利用可能です。
+- LINE へ通知: ファイル名、作成日時、サイズ、リンクをプレーンテキストで送信します。
 - 冪等性担保: 直近の処理済みファイル ID を最大 200 件まで保持します。
 
 ## フォルダ構成
@@ -28,10 +26,9 @@ Google Drive の特定フォルダ（例: ScanSnap の保存先）に新規フ�
 
 ## 事前準備
 
-1. Discord で任意チャンネルの Webhook URL を作成して控える（Discord を使う場合）。
-2. LINE Messaging API のチャネルアクセストークンと送信先 ID を用意する（LINE を使う場合）。詳細は後述の「LINE Messaging API のセットアップ」を参照。
-3. 監視対象の Google Drive フォルダ ID を確認する（URL の `folders/<ID>` の部分）。
-4. Node.js と `@google/clasp` をインストールしておく。
+1. LINE Messaging API のチャネルアクセストークンと送信先 ID を用意する。詳細は後述の「LINE Messaging API のセットアップ」を参照。
+2. 監視対象の Google Drive フォルダ ID を確認する（URL の `folders/<ID>` の部分）。
+3. Node.js と `@google/clasp` をインストールしておく。
 
 ## clasp 初期設定
 
@@ -59,14 +56,12 @@ bun run check
 
 1. スクリプト プロパティを設定
    - `FOLDER_ID`: 監視対象のフォルダ ID（必須）
-   - `DISCORD_WEBHOOK_URL`: Discord の Webhook URL（Discord を使う場合）
-   - `LINE_CHANNEL_ACCESS_TOKEN`: LINE Messaging API のチャネルアクセストークン（LINE を使う場合）
-   - `LINE_TARGET_ID`: LINE の送信先 ID（ユーザー/グループ/トークルーム）（LINE を使う場合）
+   - `LINE_CHANNEL_ACCESS_TOKEN`: LINE Messaging API のチャネルアクセストークン（必須）
+   - `LINE_TARGET_ID`: LINE の送信先 ID（ユーザー/グループ/トークルーム）（必須）
    - 設定は Apps Script エディタの「プロジェクトの設定」→「スクリプト プロパティ」で追加
    - 通知先の有効条件:
-     - Discord: `DISCORD_WEBHOOK_URL` が設定されていれば送信
      - LINE: `LINE_CHANNEL_ACCESS_TOKEN` と `LINE_TARGET_ID` が両方設定されていれば送信
-     - どちらも未設定の場合は `setConfig()` でエラーになります。少なくとも一方は設定してください。
+     - 未設定の場合は `setConfig()` でエラーになります。
 2. 初期化を実行
    - エディタの関数選択で `setConfig` を選び「実行」
    - 初回実行でベースライン（現在時刻）を保存し、5 分間隔のトリガーをセットします
@@ -78,18 +73,17 @@ bun run check
 
 - `setConfig()`: スクリプト プロパティの検証、ベースライン保存、トリガー登録
 - `installTrigger()`: `checkForNewFiles` を 5 分間隔で実行するトリガーを 1 つだけ維持
-- `checkForNewFiles()`: 前回以降に作成された新規ファイルを Drive v3 で列挙し Discord / LINE へ通知
-- `postToDiscord()`: Discord Webhook へ embed 投稿（429/5xx リトライ付き）
+- `checkForNewFiles()`: 前回以降に作成された新規ファイルを Drive v3 で列挙し LINE へ通知
 - `postToLine()`: LINE Messaging API へ push 送信（429/5xx リトライ付き、1回あたり最大5件）
 - `validateSetup()`: スクリプト プロパティとトリガーの状態を検証し、`ready` / `warnings` / `config` を実行ログに出力（通知が来ないときの一次診断）
 
 ## 必要な権限 / スコープ
 
 - Drive メタデータ読み取り: `https://www.googleapis.com/auth/drive.metadata.readonly`
-- 外部リクエスト（Discord Webhook / LINE Messaging API）: `https://www.googleapis.com/auth/script.external_request`
+- 外部リクエスト（LINE Messaging API）: `https://www.googleapis.com/auth/script.external_request`
 - スクリプト プロパティ / トリガ: `https://www.googleapis.com/auth/script.scriptapp`
 
-これらは `src/appsscript.json` に定義済みです。Advanced Service として Drive v3 を有効化しています。LINE も Discord と同じ `script.external_request` スコープを利用するため、追加のスコープ定義は不要です。
+これらは `src/appsscript.json` に定義済みです。Advanced Service として Drive v3 を有効化しています。LINE も `script.external_request` スコープを利用するため、追加のスコープ定義は不要です。
 
 ## LINE Messaging API のセットアップ
 
@@ -118,8 +112,7 @@ bun run check
 
 ## トラブルシュート
 
-- 通知が来ない（Discord / LINE 共通）: まず `validateSetup` を実行し、実行ログの `ready` / `warnings` を確認。`warnings` に未設定の理由が出ていればそれに従って直す（`ready` が `true` なのに届かない場合は以下を確認）。
-- Discord に投稿されない: Webhook URL、権限付与、`FOLDER_ID` の設定を再確認。
+- 通知が来ない: まず `validateSetup` を実行し、実行ログの `ready` / `warnings` を確認。`warnings` に未設定の理由が出ていればそれに従って直す（`ready` が `true` なのに届かない場合は以下を確認）。
 - LINE に通知されない: `LINE_CHANNEL_ACCESS_TOKEN` / `LINE_TARGET_ID` の設定、公式アカウントの友だち追加状態を再確認。実行ログに `LINE への通知に失敗しました` が出ていないか確認。
 - LINE 401 Unauthorized: チャネルアクセストークンが不正または期限切れ。再発行してスクリプト プロパティを更新。
 - LINE 400 Bad Request: `LINE_TARGET_ID` が不正、または公式アカウントと友だち追加されていない。ID の種類（ユーザー / グループ / トークルーム）を確認。

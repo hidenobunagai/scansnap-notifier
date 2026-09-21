@@ -1,18 +1,14 @@
 /**
- * Google Drive "ScanSnap" folder watcher -> Discord / LINE notifier
+ * Google Drive "ScanSnap" folder watcher -> LINE notifier
  * - Polls the target folder for new files since the last check
- * - Posts a rich embed message to a Discord channel via Webhook
- * - Also sends a plain-text message to a LINE user/group via Messaging API
- * - Discord / LINE はそれぞれ個別に有効化でき、両方同時にも送信可能です
+ * - Sends a plain-text message to a LINE user/group via Messaging API
  *
  * Setup flow:
- * 1) Set Script Properties: FOLDER_ID, and at least one of
- *    DISCORD_WEBHOOK_URL / LINE_CHANNEL_ACCESS_TOKEN + LINE_TARGET_ID.
+ * 1) Set Script Properties: FOLDER_ID, LINE_CHANNEL_ACCESS_TOKEN + LINE_TARGET_ID.
  * 2) Run setConfig() once to initialize baseline and install a 5-min trigger.
- * 3) New files added after initialization will be announced to Discord and/or LINE.
+ * 3) New files added after initialization will be announced to LINE.
  */
 
-const MAX_WEBHOOK_RETRIES = 3;
 const LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push";
 const LINE_RETRIES = 3;
 // Total retry sleep budget per request to respect GAS 6-minute per-execution limit.
@@ -20,7 +16,7 @@ const MAX_RETRY_SLEEP_MS = 30 * 1000;
 
 /**
  * One-time configuration.
- * - Use Script Properties for Drive folder ID and Discord Webhook URL, then run this.
+ * - Use Script Properties for Drive folder ID and LINE credentials, then run this.
  * - Initializes the baseline timestamp to "now" so existing files are not announced.
  * - Installs the time-driven trigger.
  * - The false argument preserves all other Script Properties (do not delete them).
@@ -28,14 +24,11 @@ const MAX_RETRY_SLEEP_MS = 30 * 1000;
 function setConfig() {
   const props = PropertiesService.getScriptProperties();
   const folderId = props.getProperty("FOLDER_ID");
-  const webhook = props.getProperty("DISCORD_WEBHOOK_URL");
   const lineToken = props.getProperty("LINE_CHANNEL_ACCESS_TOKEN");
   const lineTargetId = props.getProperty("LINE_TARGET_ID");
-  const hasDiscord = !!folderId && !!webhook;
-  const hasLine = !!folderId && !!lineToken && !!lineTargetId;
-  if (!folderId || (!hasDiscord && !hasLine)) {
+  if (!folderId || !lineToken || !lineTargetId) {
     throw new Error(
-      "Script Properties の FOLDER_ID と、通知先 (DISCORD_WEBHOOK_URL または LINE_CHANNEL_ACCESS_TOKEN + LINE_TARGET_ID) が未設定です。",
+      "Script Properties の FOLDER_ID と、通知先 (LINE_CHANNEL_ACCESS_TOKEN + LINE_TARGET_ID) が未設定です。",
     );
   }
   const now = new Date().toISOString();
@@ -56,15 +49,14 @@ function installTrigger() {
 }
 
 /**
- * Main job: finds new files added since the last run and posts to Discord / LINE.
+ * Main job: finds new files added since the last run and posts to LINE.
  *
  * Concurrency: a script lock keeps overlapping triggers from running in parallel.
  * LAST_CHECK is captured BEFORE the Drive query so files created during the run
  *   are not silently skipped next time.
- * Errors: a Discord failure aborts before advancing LAST_CHECK, so the failed
- *   file is retried next run while already-delivered files are protected by PROCESSED_IDS.
- * LINE is sent after Discord in batches of <=5 messages (the Messaging API cap).
- *   A LINE failure is logged only; it never blocks state persistence.
+ * Errors: a LINE failure is logged only; it never blocks state persistence
+ *   (PROCESSED_IDS already marks the file done, so a LINE-only retry would need
+ *   a second cursor — see the ponytail note below).
  */
 function checkForNewFiles() {
   const lock = LockService.getScriptLock();
@@ -75,14 +67,11 @@ function checkForNewFiles() {
   try {
     const props = PropertiesService.getScriptProperties();
     const folderId = props.getProperty("FOLDER_ID");
-    const webhook = props.getProperty("DISCORD_WEBHOOK_URL");
     const lineToken = props.getProperty("LINE_CHANNEL_ACCESS_TOKEN");
     const lineTargetId = props.getProperty("LINE_TARGET_ID");
-    const hasDiscord = !!folderId && !!webhook;
-    const hasLine = !!folderId && !!lineToken && !!lineTargetId;
-    if (!folderId || (!hasDiscord && !hasLine)) {
+    if (!folderId || !lineToken || !lineTargetId) {
       throw new Error(
-        "Missing configuration. Run setConfig() to initialize (FOLDER_ID + at least one of DISCORD_WEBHOOK_URL / LINE_CHANNEL_ACCESS_TOKEN + LINE_TARGET_ID).",
+        "Missing configuration. Run setConfig() to initialize (FOLDER_ID + LINE_CHANNEL_ACCESS_TOKEN + LINE_TARGET_ID).",
       );
     }
 
@@ -110,40 +99,25 @@ function checkForNewFiles() {
     const query = `('${folderId}' in parents) and trashed = false and createdTime > '${lastCheck}'`;
     const newFiles = listAllFiles(query);
 
-    // Tracks Discord delivery only: it holds LAST_CHECK back so the failed file is
-    // retried next run. LINE failures must never block the state save below.
-    let discordFailed = false;
     const lineMessages = [];
     for (const f of newFiles) {
       if (processed.includes(f.id)) continue;
 
-      if (hasDiscord) {
-        try {
-          postToDiscord(webhook, f);
-        } catch (e) {
-          console.error("Discord への通知に失敗しました (id=%s): %s", f.id, e.message);
-          discordFailed = true;
-          break;
-        }
-      }
-
-      if (hasLine) lineMessages.push(buildFileMessage(f));
+      lineMessages.push(buildFileMessage(f));
 
       processed.push(f.id);
       if (processed.length > 200) processed = processed.slice(-200);
     }
 
-    // LINE delivery is independent of the Discord outcome, so messages collected
-    // before an early Discord break are still sent. A LINE failure is logged and
-    // swallowed: letting it escape would skip the property save below, and the next
-    // run would re-post every already-sent file to Discord — every 5 min for as long
-    // as the LINE token stays expired.
-    // ponytail: LINE failures are log-only, so a file that never reached LINE is not
-    // retried for LINE, because PROCESSED_IDS already marks it done. True LINE-only
-    // retry needs a second cursor, e.g. LINE_LAST_CHECK, so the Drive query still
-    // returns the file, plus LINE_SENT_IDS with PROCESSED_IDS treated as already-sent
-    // for migration.
-    if (hasLine && lineMessages.length) {
+    // LINE delivery is best-effort: a failure is logged and swallowed. Letting it
+    // escape would skip the property save below, and the next run would re-post
+    // every already-processed file every 5 min for as long as the token stays
+    // expired.
+    // ponytail: a file that never reached LINE is not retried, because
+    // PROCESSED_IDS already marks it done. True LINE-only retry needs a second
+    // cursor, e.g. LINE_LAST_CHECK, so the Drive query still returns the file,
+    // plus LINE_SENT_IDS with PROCESSED_IDS treated as already-sent for migration.
+    if (lineMessages.length) {
       for (let i = 0; i < lineMessages.length; i += 5) {
         const batch = lineMessages.slice(i, i + 5);
         try {
@@ -154,10 +128,8 @@ function checkForNewFiles() {
       }
     }
 
-    // Do not advance LAST_CHECK on a Discord error; that file retries next run while
-    // already-delivered files are protected by PROCESSED_IDS.
     props.setProperties(
-      { LAST_CHECK: discordFailed ? lastCheck : now, PROCESSED_IDS: JSON.stringify(processed) },
+      { LAST_CHECK: now, PROCESSED_IDS: JSON.stringify(processed) },
       false,
     );
   } finally {
@@ -184,31 +156,6 @@ function listAllFiles(q) {
     pageToken = resp.nextPageToken;
   } while (pageToken);
   return files;
-}
-
-/**
- * Posts a rich embed message to Discord via webhook (429/5xx retry).
- */
-function postToDiscord(webhookUrl, file) {
-  const createdJst = Utilities.formatDate(new Date(file.createdTime), "Asia/Tokyo", "yyyy-MM-dd HH:mm:ss");
-  const fields = [{ name: "📅 作成日時", value: `${createdJst} JST`, inline: true }];
-  if (file.size) fields.push({ name: "📦 サイズ", value: formatFileSize(Number(file.size)), inline: true });
-
-  const embed = {
-    title: file.name,
-    url: file.webViewLink,
-    color: 0x5865f2, // Discord Blurple
-    fields,
-    footer: { text: "ScanSnap Drive Watcher" },
-    timestamp: file.createdTime,
-  };
-
-  fetchWithRetry(webhookUrl, {
-    method: "post",
-    contentType: "application/json",
-    payload: JSON.stringify({ embeds: [embed] }),
-    muteHttpExceptions: true,
-  }, MAX_WEBHOOK_RETRIES);
 }
 
 /**
@@ -314,18 +261,14 @@ function validateSetup() {
     warnings.push("FOLDER_ID が未設定です。setConfig() を実行してください。");
   }
 
-  // Discord設定
-  const discordWebhookUrl = (props.getProperty("DISCORD_WEBHOOK_URL") || "").trim();
-  config.discordConfigured = !!discordWebhookUrl;
-
   // LINE設定
   const lineChannelAccessToken = (props.getProperty("LINE_CHANNEL_ACCESS_TOKEN") || "").trim();
   const lineTargetId = (props.getProperty("LINE_TARGET_ID") || "").trim();
   config.lineConfigured = !!(lineChannelAccessToken && lineTargetId);
 
   // 通知先の確認
-  if (!config.discordConfigured && !config.lineConfigured) {
-    warnings.push("通知先が未設定です。Discord または LINE のいずれかを設定してください。");
+  if (!config.lineConfigured) {
+    warnings.push("通知先が未設定です。LINE の設定を行ってください。");
   }
 
   // トリガー状態
