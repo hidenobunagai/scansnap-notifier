@@ -201,4 +201,37 @@ describe("checkForNewFiles", () => {
     const { api } = loadGas({ properties: { FOLDER_ID: "folder" } });
     expect(() => api.checkForNewFiles()).toThrow("Missing configuration");
   });
+
+  test("実行時間予算を超えたら打ち切って状態を保存し、残りだけ次回に残す", () => {
+    // LINE が 429 + Retry-After 25 を返し続ける状況（= 家族が見ていないとき）。
+    // fetchWithRetry は 1 push あたり sleep 予算 30 秒 (MAX_RETRY_SLEEP_MS) なので、
+    // 25 + 5.1 秒で諦めて throw する（1 バッチ = push 1 通 = ファイル 5 件）。
+    // 50 バッチ（250 ファイル）なら sleep だけで 25.1 x 50 = 1255 秒 = 20 分超。
+    // 打ち切りが効かなければ GAS の 6 分上限で強制終了され、末尾の状態保存に
+    // 到達せず次回実行が二重投稿する。今回足した予算 (MAX_RUN_MS) で、
+    // 6 分未満に打ち切って状態を保存できることを確認する。
+    const many = Array.from({ length: 250 }, (_, i) => file(`a${i + 1}`));
+    const rateLimited = () => resp(429, { headers: { "Retry-After": "25" } });
+    const list = stubFetch([rateLimited]);
+    const { api, get, clock } = loadGas({
+      properties: { ...base, PROCESSED_IDS: "[]" },
+      files: many,
+      fetch: list.fetch,
+      now: "1970-01-01T00:00:00.000Z",
+      sleep: (ms) => {
+        if (clock.ms + ms >= 6 * 60 * 1000) throw new Error("execution timed out");
+      },
+      log: () => {},
+    });
+
+    // 1 バッチ = 2 push = 25.1 秒。9 バッチ（45 ファイル）で 4 分を超えて打ち切られる。
+    // 6 分上限の throw は一度も起きないので、状態は保存されて実行は正常に終わる。
+    api.checkForNewFiles();
+    expect(clock.ms).toBe(10 * 25_100);
+    expect(list.calls).toHaveLength(20);
+
+    // 状態は保存されている（強制終了で失われない）＝次回も二重投稿しない
+    expect(get("PROCESSED_IDS")).toBe("[]");
+    expect(get("LAST_CHECK")).toBe(base.LAST_CHECK);
+  });
 });

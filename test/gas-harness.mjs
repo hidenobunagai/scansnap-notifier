@@ -25,6 +25,8 @@ export function resp(code, { headers = {}, text = "" } = {}) {
  * GAS のグローバルを差し替えて Code.gs を読み込む。
  * `fetch` は UrlFetchApp.fetch、`files` は Drive.Files.list の戻り値（呼び出しごとに変える場合は関数）。
  * `sleep` は Utilities.sleep、`log` は console.log / warn / error。
+ * `now` は Date.now の初期値。仮想時計は Utilities.sleep のぶんだけ進み、渡した `sleep` が
+ * throw した（= タイムアウトを模したもの）ときは進まない。返り値の `clock` で経過 ms を読める。
  */
 export function loadGas({
   properties = {},
@@ -36,6 +38,7 @@ export function loadGas({
   source = SOURCE,
 } = {}) {
   const store = new Map(Object.entries(properties));
+  const clock = { ms: Date.parse(now) };
   const gas = {
     console: { log, warn: log, error: log },
     PropertiesService: {
@@ -58,13 +61,27 @@ export function loadGas({
       // 応答オブジェクトを直接渡された場合は「毎回それを返す」スタブとして扱う
       fetch: typeof fetch === "function" ? fetch : () => fetch,
     },
-    Utilities: { sleep, formatDate: (d) => new Date(d).toISOString() },
+    Utilities: {
+      sleep: (ms) => {
+        sleep(ms);
+        clock.ms += ms;
+      },
+      formatDate: (d) => new Date(d).toISOString(),
+    },
   };
   const names = Object.keys(gas);
-  const api = new Function(...names, `${source}\nreturn { ${EXPORTS.join(", ")} };`)(
-    ...names.map((name) => gas[name]),
-  );
-  return { api, get: (key) => store.get(key), store };
+  // GAS の Date.now を仮想時計に差し替える。素 Date は傷つけず Date.now だけ差し替える
+  const clockedDate = Object.assign(function (...a) {
+    return a.length ? new Date(...a) : new Date(clock.ms);
+  }, Date);
+  clockedDate.now = () => clock.ms;
+  const api = new Function(
+    ...names,
+    "Date",
+    `${source}
+return { ${EXPORTS.join(", ")} };`,
+  )(...names.map((name) => gas[name]), clockedDate);
+  return { api, get: (key) => store.get(key), store, clock };
 }
 
 /** Code.gs の通知に必要な Script Properties */

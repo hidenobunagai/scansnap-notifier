@@ -13,6 +13,9 @@ const LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push";
 const LINE_RETRIES = 3;
 // Total retry sleep budget per request to respect GAS 6-minute per-execution limit.
 const MAX_RETRY_SLEEP_MS = 30 * 1000;
+// Wall-clock budget for one checkForNewFiles run. Stopping early leaves room before
+// the GAS 6-minute per-execution kill, which would skip the state save at the end.
+const MAX_RUN_MS = 4 * 60 * 1000;
 
 /**
  * One-time configuration.
@@ -54,6 +57,9 @@ function installTrigger() {
  * Concurrency: a script lock keeps overlapping triggers from running in parallel.
  * LAST_CHECK is captured BEFORE the Drive query so files created during the run
  *   are not silently skipped next time.
+ * Budget: once the run passes MAX_RUN_MS the send loop breaks and is treated like
+ *   a delivery failure, so the state below is still saved and the remaining files
+ *   wait for the next run instead of being lost to the execution timeout.
  * Errors: LINE delivery failure logs the error and leaves LAST_CHECK untouched,
  *   so failed files are retried on the next run. Files from successfully delivered
  *   batches are recorded in PROCESSED_IDS to avoid duplicate notifications.
@@ -110,8 +116,18 @@ function checkForNewFiles() {
     // 送信成功したバッチのみ PROCESSED_IDS に記録し、失敗時は LAST_CHECK を進めないことで
     // 最小限の状態管理で未送信ファイルの再送を実現する。
     let hasFailure = false;
+    const startedAt = Date.now(); // Drive クエリ後のここから計る（クエリ時間も予算に含める）
     if (pendingFiles.length) {
       for (let i = 0; i < pendingFiles.length; i += 5) {
+        if (Date.now() - startedAt > MAX_RUN_MS) {
+          hasFailure = true;
+          console.warn(
+            "実行時間予算 (%d ms) を使い切ったので残り %d 件は次回実行に回します。",
+            MAX_RUN_MS,
+            pendingFiles.length - i,
+          );
+          break;
+        }
         const batchFiles = pendingFiles.slice(i, i + 5);
         const batchMessages = batchFiles.map(buildFileMessage);
         try {

@@ -17,6 +17,7 @@ Google Drive の特定フォルダ（例: ScanSnap の保存先）に新規フ�
 - 5 分間隔で監視: 時間主導トリガーを 5 分おきに実行し新規を検出します。
 - LINE へ通知: ファイル名、作成日時、サイズ、リンクをプレーンテキストで送信します。
 - 冪等性担保: 直近の処理済みファイル ID を最大 200 件まで保持します。
+- 実行時間予算: 1 実行が 4 分（`MAX_RUN_MS`）を超えたら送信を止め、状態を保存して終了します。残りは次回実行に回るので、GAS の 6 分上限で強制終了されて二重投稿する事故を防ぎます。
 
 ## フォルダ構成
 
@@ -58,7 +59,7 @@ bun run check
 
 ### 挙動テスト
 
-`fetchWithRetry` のリトライ分岐（503 の再試行・`Retry-After` 尊重・sleep 予算上限・`fatalCodes` の即 throw）と、`checkForNewFiles` の状態管理（一時失敗で二重投稿しない・LINE 失敗はログのみで状態は保存する）を固定しています。GAS API は `test/gas-harness.mjs` がスタブに差し替えるので、リポジトリ外で使い捨てのスタブを用意する必要はありません。
+`fetchWithRetry` のリトライ分岐（503 の再試行・`Retry-After` 尊重・sleep 予算上限・`fatalCodes` の即 throw）と、`checkForNewFiles` の状態管理（一時失敗で二重投稿しない・LINE 失敗はログのみで状態は保存する・4 分の実行時間予算で打ち切ると残りは次回実行に回る）を固定しています。GAS API は `test/gas-harness.mjs` がスタブに差し替えるので、リポジトリ外で使い捨てのスタブを用意する必要はありません。
 
 ```sh
 bun test
@@ -87,8 +88,8 @@ bun test
 
 - `setConfig()`: スクリプト プロパティの検証、ベースライン保存、トリガー登録
 - `installTrigger()`: `checkForNewFiles` を 5 分間隔で実行するトリガーを 1 つだけ維持
-- `checkForNewFiles()`: 前回以降に作成された新規ファイルを Drive v3 で列挙し LINE へ通知
-- `postToLine()`: LINE Messaging API へ push 送信（429/5xx リトライ付き、1回あたり最大5件）
+- `checkForNewFiles()`: 前回以降に作成された新規ファイルを Drive v3 で列挙し LINE へ通知。1 実行が 4 分（`MAX_RUN_MS`）を超えたら送信を止め、状態を保存して終了します（残りは次回実行に回る）
+- `postToLine()`: LINE Messaging API へ push 送信（429/5xx リトライ付き、1回あたり最大5件。1 push あたりの sleep は `MAX_RETRY_SLEEP_MS` = 30 秒まで）
 - `validateSetup()`: スクリプト プロパティとトリガーの状態を検証し、`ready` / `warnings` / `config` を実行ログに出力（通知が来ないときの一次診断）
 
 ## 必要な権限 / スコープ
@@ -131,5 +132,6 @@ bun test
 - LINE 401 Unauthorized: チャネルアクセストークンが不正または期限切れ。再発行してスクリプト プロパティを更新。
 - LINE 400 Bad Request: `LINE_TARGET_ID` が不正、または公式アカウントと友だち追加されていない。ID の種類（ユーザー / グループ / トークルーム）を確認。
 - LINE で届かない（エラーなし）: 無料枠の月 1,000 メッセージ上限に達していないか確認。
+- 通知が遅れてまとめて届く: LINE が 429 を返したときは 1 実行の 4 分予算で打ち切られ、残りは 5 分後の次回実行に回ります。実行ログに `実行時間予算 ... を使い切った` が出ます。
 - 既存ファイルまで通知された: `setConfig()` を再実行して `LAST_CHECK` を現在時刻に更新。
 - 通知頻度を上げたい: `installTrigger()` の間隔はコード上で `everyMinutes(5)` を変更可能（実行上限に注意）。
