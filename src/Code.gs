@@ -54,9 +54,9 @@ function installTrigger() {
  * Concurrency: a script lock keeps overlapping triggers from running in parallel.
  * LAST_CHECK is captured BEFORE the Drive query so files created during the run
  *   are not silently skipped next time.
- * Errors: a LINE failure is logged only; it never blocks state persistence
- *   (PROCESSED_IDS already marks the file done, so a LINE-only retry would need
- *   a second cursor — see the ponytail note below).
+ * Errors: LINE delivery failure logs the error and leaves LAST_CHECK untouched,
+ *   so failed files are retried on the next run. Files from successfully delivered
+ *   batches are recorded in PROCESSED_IDS to avoid duplicate notifications.
  */
 function checkForNewFiles() {
   const lock = LockService.getScriptLock();
@@ -99,39 +99,42 @@ function checkForNewFiles() {
     const query = `('${folderId}' in parents) and trashed = false and createdTime > '${lastCheck}'`;
     const newFiles = listAllFiles(query);
 
-    const lineMessages = [];
+    const pendingFiles = [];
     for (const f of newFiles) {
-      if (processed.includes(f.id)) continue;
-
-      lineMessages.push(buildFileMessage(f));
-
-      processed.push(f.id);
-      if (processed.length > 200) processed = processed.slice(-200);
+      if (!processed.includes(f.id)) {
+        pendingFiles.push(f);
+      }
     }
 
-    // LINE delivery is best-effort: a failure is logged and swallowed. Letting it
-    // escape would skip the property save below, and the next run would re-post
-    // every already-processed file every 5 min for as long as the token stays
-    // expired.
-    // ponytail: a file that never reached LINE is not retried, because
-    // PROCESSED_IDS already marks it done. True LINE-only retry needs a second
-    // cursor, e.g. LINE_LAST_CHECK, so the Drive query still returns the file,
-    // plus LINE_SENT_IDS with PROCESSED_IDS treated as already-sent for migration.
-    if (lineMessages.length) {
-      for (let i = 0; i < lineMessages.length; i += 5) {
-        const batch = lineMessages.slice(i, i + 5);
+    // ponytail: Discord が削除され LINE 単独となったため、追加のカーソルを持たずに
+    // 送信成功したバッチのみ PROCESSED_IDS に記録し、失敗時は LAST_CHECK を進めないことで
+    // 最小限の状態管理で未送信ファイルの再送を実現する。
+    let hasFailure = false;
+    if (pendingFiles.length) {
+      for (let i = 0; i < pendingFiles.length; i += 5) {
+        const batchFiles = pendingFiles.slice(i, i + 5);
+        const batchMessages = batchFiles.map(buildFileMessage);
         try {
-          postToLine(lineToken, lineTargetId, batch);
+          postToLine(lineToken, lineTargetId, batchMessages);
+          for (const f of batchFiles) {
+            processed.push(f.id);
+          }
+          if (processed.length > 200) processed = processed.slice(-200);
         } catch (e) {
-          console.error("LINE への通知に失敗しました (%d件): %s", batch.length, e.message);
+          hasFailure = true;
+          console.error("LINE への通知に失敗しました (%d件): %s", batchFiles.length, e.message);
         }
       }
     }
 
-    props.setProperties(
-      { LAST_CHECK: now, PROCESSED_IDS: JSON.stringify(processed) },
-      false,
-    );
+    if (hasFailure) {
+      props.setProperty("PROCESSED_IDS", JSON.stringify(processed));
+    } else {
+      props.setProperties(
+        { LAST_CHECK: now, PROCESSED_IDS: JSON.stringify(processed) },
+        false,
+      );
+    }
   } finally {
     lock.releaseLock();
   }
