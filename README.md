@@ -22,6 +22,8 @@ Google Drive の特定フォルダ（例: ScanSnap の保存先）に新規フ�
 
 - `src/Code.gs`: 本体スクリプト
 - `src/appsscript.json`: マニフェスト（Advanced Drive v3 / OAuth スコープ）
+- `test/`: `src/Code.gs` の挙動テスト（`bun test`）
+- `scripts/check-gas.mjs`: 静的チェック（`bun run check`）
 - `.clasp.example.json`: clasp 用サンプル設定（`.clasp.json` は Git で無視）
 
 ## 事前準備
@@ -44,13 +46,25 @@ Google Drive の特定フォルダ（例: ScanSnap の保存先）に新規フ�
 4. スクリプトエディタを開く（確認用）
    - `clasp open`
 
-## 検証（静的チェック）
+## 検証
+
+### 静的チェック
 
 GAS コードの構文検査、トップレベル識別子の重複チェック、未定義グローバル参照の簡易検査を実行できます。
 
 ```sh
 bun run check
 ```
+
+### 挙動テスト
+
+`fetchWithRetry` のリトライ分岐（503 の再試行・`Retry-After` 尊重・sleep 予算上限・`fatalCodes` の即 throw）と、`checkForNewFiles` の状態管理（一時失敗で二重投稿しない・LINE 失敗はログのみで状態は保存する）を固定しています。GAS API は `test/gas-harness.mjs` がスタブに差し替えるので、リポジトリ外で使い捨てのスタブを用意する必要はありません。
+
+```sh
+bun test
+```
+
+`src/Code.gs` を編集したら `bun run check` と `bun test` の両方を通してください（CI もこの 2 つを実行します）。
 
 ## GAS 側の設定
 

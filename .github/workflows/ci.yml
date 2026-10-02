@@ -16,5 +16,6 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
-      # Dependency-free GAS static check (syntax + undeclared calls); no install needed.
+      # Dependency-free: GAS static check (syntax + undeclared calls) + behaviour tests. No install needed.
       - run: bun run check
+      - run: bun test

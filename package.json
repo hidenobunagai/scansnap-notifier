@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "bun scripts/check-gas.mjs"
+    "check": "bun scripts/check-gas.mjs",
+    "test": "bun test"
   }
 }
