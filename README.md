@@ -1,137 +1,137 @@
 # ScanSnap Notifier (GAS + clasp)
 
-Google Drive の特定フォルダ（例: ScanSnap の保存先）に新規ファイルが追加されたら、LINE Messaging API で push 通知する Google Apps Script プロジェクトです。clasp を用いてローカルから管理・デプロイします。
+A Google Apps Script project that sends push notifications via the LINE Messaging API when a new file is added to a specific Google Drive folder (for example, a ScanSnap destination). It is managed and deployed locally with clasp.
 
-## 動作フロー図
+## Workflow diagram
 
-セットアップから定期監視・通知・状態更新までの全体フローです。画像をクリックするとインタラクティブ版（テーマ切替 / ズーム / 検索 / 関係性トレース）が開きます。
+The full flow from setup through periodic scanning, notification, and state updates. Click the image to open the interactive version (theme switching / zoom / search / relationship tracing).
 
-[![ScanSnap Notifier 動作フロー](docs/archify/scansnap-notifier-flow.capture.png)](docs/archify/scansnap-notifier-flow.html)
+[![ScanSnap Notifier workflow](docs/archify/scansnap-notifier-flow.capture.png)](docs/archify/scansnap-notifier-flow.html)
 
-- [インタラクティブ図 (HTML)](docs/archify/scansnap-notifier-flow.html)
-- [図の仕様 (JSON)](docs/archify/scansnap-notifier-workflow.json) — 再生成: `archify deliver workflow docs/archify/scansnap-notifier-workflow.json docs/archify/scansnap-notifier-flow.html --quality showcase`
+- [Interactive diagram (HTML)](docs/archify/scansnap-notifier-flow.html)
+- [Diagram spec (JSON)](docs/archify/scansnap-notifier-workflow.json) — regenerate: `archify deliver workflow docs/archify/scansnap-notifier-workflow.json docs/archify/scansnap-notifier-flow.html --quality showcase`
 
-## 特長 / 動作概要
+## Features / How it works
 
-- 新規ファイルのみ通知: 初回にベースラインを現在時刻へ設定し、既存ファイルは通知しません。
-- 5 分間隔で監視: 時間主導トリガーを 5 分おきに実行し新規を検出します。
-- LINE へ通知: ファイル名、作成日時、サイズ、リンクをプレーンテキストで送信します。
-- 冪等性担保: 直近の処理済みファイル ID を最大 200 件まで保持します。
-- 実行時間予算: 1 実行が 4 分（`MAX_RUN_MS`）を超えたら送信を止め、状態を保存して終了します。残りは次回実行に回るので、GAS の 6 分上限で強制終了されて二重投稿する事故を防ぎます。
+- Notifies only about new files: on the first run it sets the baseline to the current time, so existing files are not notified.
+- Scans every 5 minutes: a time-driven trigger runs every 5 minutes to detect new files.
+- Notifies LINE: sends the file name, creation time, size, and link as plain text.
+- Idempotency: keeps up to 200 recently processed file IDs.
+- Execution time budget: if a single run exceeds 4 minutes (`MAX_RUN_MS`), it stops sending, saves its state, and exits. The remainder is deferred to the next run, which prevents the GAS 6-minute limit from force-terminating the run and causing duplicate posts.
 
-## フォルダ構成
+## Directory layout
 
-- `src/Code.gs`: 本体スクリプト
-- `src/appsscript.json`: マニフェスト（Advanced Drive v3 / OAuth スコープ）
-- `test/`: `src/Code.gs` の挙動テスト（`bun test`）
-- `scripts/check-gas.mjs`: 静的チェック（`bun run check`）
-- `.clasp.example.json`: clasp 用サンプル設定（`.clasp.json` は Git で無視）
+- `src/Code.gs`: main script
+- `src/appsscript.json`: manifest (Advanced Drive v3 / OAuth scopes)
+- `test/`: behavior tests for `src/Code.gs` (`bun test`)
+- `scripts/check-gas.mjs`: static checks (`bun run check`)
+- `.clasp.example.json`: sample clasp config (`.clasp.json` is git-ignored)
 
-## 事前準備
+## Prerequisites
 
-1. LINE Messaging API のチャネルアクセストークンと送信先 ID を用意する。詳細は後述の「LINE Messaging API のセットアップ」を参照。
-2. 監視対象の Google Drive フォルダ ID を確認する（URL の `folders/<ID>` の部分）。
-3. Node.js と `@google/clasp` をインストールしておく。
+1. Prepare a LINE Messaging API channel access token and a destination ID. See "Setting up the LINE Messaging API" below for details.
+2. Find the ID of the Google Drive folder to watch (the `folders/<ID>` part of its URL).
+3. Install Node.js and `@google/clasp` beforehand.
 
-## clasp 初期設定
+## Initial clasp setup
 
-1. ログイン
+1. Log in
    - `clasp login`
-2. `.clasp.json` の用意（このリポジトリでは Git 管理外）
-   - PowerShell 例: `Copy-Item .clasp.example.json .clasp.json`
-   - `.clasp.json` の `scriptId` を自身のスクリプト ID に置き換える
-   - まだスクリプトを持っていない場合は新規作成:
+2. Prepare `.clasp.json` (not tracked by git in this repository)
+   - PowerShell example: `Copy-Item .clasp.example.json .clasp.json`
+   - Replace `scriptId` in `.clasp.json` with your own script ID
+   - If you do not have a script yet, create one:
      `clasp create --type standalone --title "ScanSnap Notifier" --rootDir ./src`
-3. コードとマニフェストを push
+3. Push the code and manifest
    - `clasp push`
-4. スクリプトエディタを開く（確認用）
+4. Open the script editor (for inspection)
    - `clasp open`
 
-## 検証
+## Verification
 
-### 静的チェック
+### Static checks
 
-GAS コードの構文検査、トップレベル識別子の重複チェック、未定義グローバル参照の簡易検査を実行できます。
+Checks GAS code syntax, duplicate top-level identifiers, and simple undefined global references.
 
 ```sh
 bun run check
 ```
 
-### 挙動テスト
+### Behavior tests
 
-`fetchWithRetry` のリトライ分岐（503 の再試行・`Retry-After` 尊重・sleep 予算上限・`fatalCodes` の即 throw）と、`checkForNewFiles` の状態管理（一時失敗で二重投稿しない・LINE 失敗はログのみで状態は保存する・4 分の実行時間予算で打ち切ると残りは次回実行に回る）を固定しています。GAS API は `test/gas-harness.mjs` がスタブに差し替えるので、リポジトリ外で使い捨てのスタブを用意する必要はありません。
+These pin down the retry branches of `fetchWithRetry` (503 retry, `Retry-After` respect, sleep budget cap, immediate throw on `fatalCodes`) and the state management of `checkForNewFiles` (no duplicate posts on transient failure, LINE failures are logged only while the state is still saved, and hitting the 4-minute execution budget leaves the remainder for the next run). `test/gas-harness.mjs` replaces the GAS APIs with stubs, so you do not need to prepare throwaway stubs outside the repository.
 
 ```sh
 bun test
 ```
 
-`src/Code.gs` を編集したら `bun run check` と `bun test` の両方を通してください（CI もこの 2 つを実行します）。
+After editing `src/Code.gs`, pass both `bun run check` and `bun test` (CI runs these two as well).
 
-## GAS 側の設定
+## GAS configuration
 
-1. スクリプト プロパティを設定
-   - `FOLDER_ID`: 監視対象のフォルダ ID（必須）
-   - `LINE_CHANNEL_ACCESS_TOKEN`: LINE Messaging API のチャネルアクセストークン（必須）
-   - `LINE_TARGET_ID`: LINE の送信先 ID（ユーザー/グループ/トークルーム）（必須）
-   - 設定は Apps Script エディタの「プロジェクトの設定」→「スクリプト プロパティ」で追加
-   - 通知先の有効条件:
-     - LINE: `LINE_CHANNEL_ACCESS_TOKEN` と `LINE_TARGET_ID` が両方設定されていれば送信
-     - 未設定の場合は `setConfig()` でエラーになります。
-2. 初期化を実行
-   - エディタの関数選択で `setConfig` を選び「実行」
-   - 初回実行でベースライン（現在時刻）を保存し、5 分間隔のトリガーをセットします
-3. 動作確認
-   - まず `validateSetup` を実行し、実行ログの `ready` と `warnings` を確認（未設定・トリガー欠落があれば理由が出ます）
-   - 続いて必要に応じて `checkForNewFiles` を手動実行し、エラーがないか確認
+1. Set script properties
+   - `FOLDER_ID`: ID of the folder to watch (required)
+   - `LINE_CHANNEL_ACCESS_TOKEN`: LINE Messaging API channel access token (required)
+   - `LINE_TARGET_ID`: LINE destination ID (user / group / room) (required)
+   - Add them under "Project Settings" → "Script Properties" in the Apps Script editor (Japanese UI: 「プロジェクトの設定」→「スクリプト プロパティ」)
+   - Conditions for enabling notifications:
+     - LINE: sent when both `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_TARGET_ID` are set
+     - If they are unset, `setConfig()` raises an error.
+2. Run the initialization
+   - Select `setConfig` in the editor's function dropdown and click "Run"
+   - The first run saves the baseline (current time) and sets a 5-minute trigger
+3. Verify behavior
+   - First run `validateSetup` and check `ready` and `warnings` in the execution log (if something is unset or the trigger is missing, the reason is printed)
+   - Then run `checkForNewFiles` manually as needed and check for errors
 
-## 仕組み（主要関数）
+## How it works (main functions)
 
-- `setConfig()`: スクリプト プロパティの検証、ベースライン保存、トリガー登録
-- `installTrigger()`: `checkForNewFiles` を 5 分間隔で実行するトリガーを 1 つだけ維持
-- `checkForNewFiles()`: 前回以降に作成された新規ファイルを Drive v3 で列挙し LINE へ通知。1 実行が 4 分（`MAX_RUN_MS`）を超えたら送信を止め、状態を保存して終了します（残りは次回実行に回る）
-- `postToLine()`: LINE Messaging API へ push 送信（429/5xx リトライ付き、1回あたり最大5件。1 push あたりの sleep は `MAX_RETRY_SLEEP_MS` = 30 秒まで）
-- `validateSetup()`: スクリプト プロパティとトリガーの状態を検証し、`ready` / `warnings` / `config` を実行ログに出力（通知が来ないときの一次診断）
+- `setConfig()`: validates the script properties, saves the baseline, and registers the trigger
+- `installTrigger()`: maintains exactly one trigger that runs `checkForNewFiles` every 5 minutes
+- `checkForNewFiles()`: lists files created since the previous check via Drive v3 and notifies LINE. If a single run exceeds 4 minutes (`MAX_RUN_MS`), it stops sending, saves its state, and exits (the remainder is deferred to the next run)
+- `postToLine()`: sends a push to the LINE Messaging API (with 429/5xx retries, up to 5 messages per call; sleep per push is capped at `MAX_RETRY_SLEEP_MS` = 30 seconds)
+- `validateSetup()`: validates the script properties and trigger state and prints `ready` / `warnings` / `config` to the execution log (first-line diagnosis when notifications do not arrive)
 
-## 必要な権限 / スコープ
+## Required permissions / scopes
 
-- Drive メタデータ読み取り: `https://www.googleapis.com/auth/drive.metadata.readonly`
-- 外部リクエスト（LINE Messaging API）: `https://www.googleapis.com/auth/script.external_request`
-- スクリプト プロパティ / トリガ: `https://www.googleapis.com/auth/script.scriptapp`
+- Read Drive metadata: `https://www.googleapis.com/auth/drive.metadata.readonly`
+- External requests (LINE Messaging API): `https://www.googleapis.com/auth/script.external_request`
+- Script properties / triggers: `https://www.googleapis.com/auth/script.scriptapp`
 
-これらは `src/appsscript.json` に定義済みです。Advanced Service として Drive v3 を有効化しています。LINE も `script.external_request` スコープを利用するため、追加のスコープ定義は不要です。
+These are already defined in `src/appsscript.json`. Drive v3 is enabled as an advanced service. LINE also relies on the `script.external_request` scope, so no additional scope definitions are needed.
 
-## LINE Messaging API のセットアップ
+## Setting up the LINE Messaging API
 
-> **注意**: 旧来の LINE Notify は 2025/3 に廃止されたため、本プロジェクトでは LINE Messaging API（公式アカウント経由の push メッセージ）を使用します。
+> **Note**: The legacy LINE Notify was discontinued in March 2025, so this project uses the LINE Messaging API (push messages via an official account).
 
-1. [LINE Developers](https://developers.line.biz/) でプロバイダーと Messaging API チャネルを作成
-2. チャネルの「Messaging API 設定」で「チャネルアクセストークン」を発行し、控える
-3. 通知を受け取りたい LINE アカウント（自分自身や家族グループ）を公式アカウントと友だち追加
-4. 送信先 ID を確認:
-   - 個別ユーザー: 公式アカウントにメッセージを送って webhook で取得する `userId` など
-   - グループ / トークルーム: 公式アカウントをグループに招待した後に同ページの「グループ / トークルーム ID」を参照
-5. Apps Script のスクリプト プロパティに `LINE_CHANNEL_ACCESS_TOKEN` と `LINE_TARGET_ID` を追加
+1. Create a provider and a Messaging API channel in [LINE Developers](https://developers.line.biz/)
+2. Issue a channel access token under "Messaging API settings" for the channel and note it down
+3. Add the official account as a friend from the LINE account that should receive notifications (yourself or a family group)
+4. Find the destination ID:
+   - Individual user: the `userId` obtained via webhook by sending a message to the official account, and so on
+   - Group / room: invite the official account to the group, then see "Group / room ID" on the same page
+5. Add `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_TARGET_ID` to the Apps Script script properties
 
-### LINE の注意点
+### LINE caveats
 
-- 無料枠（Light Plan）では月 1,000 メッセージまで。超過分は従量課金または送信制限されるため、通知頻度に注意
-- `push` API は友だち追加済みの相手にのみ届く。未追加ユーザーへの送信は失敗する
-- グループ / トークルームへ送る場合は公式アカウントをその部屋に招待しておく
-- アクセストークンは定期的にローテーション推奨（漏洩時は即時再発行）
+- The free tier (Light Plan) allows up to 1,000 messages per month. Beyond that you either pay as you go or sending is restricted, so keep an eye on the notification frequency
+- The `push` API only reaches users who have added the account as a friend. Sending to non-friends fails
+- To send to a group / room, invite the official account to that room first
+- Rotating the access token periodically is recommended (reissue it immediately if it leaks)
 
-## 運用メモ
+## Operational notes
 
-- 初回 `setConfig()` 実行までは通知されません。
-- 通知リンクは `webViewLink` です。対象ファイルの共有権限により閲覧可否が決まります。
-- フォルダ名の重複を避け、必ず「フォルダ ID」で監視対象を指定してください。
+- No notifications are sent until `setConfig()` has been run for the first time.
+- Notification links are `webViewLink`. Whether a file can be opened depends on its sharing permissions.
+- Avoid duplicate folder names and always specify the watch target by folder ID.
 
-## トラブルシュート
+## Troubleshooting
 
-- 通知が来ない: まず `validateSetup` を実行し、実行ログの `ready` / `warnings` を確認。`warnings` に未設定の理由が出ていればそれに従って直す（`ready` が `true` なのに届かない場合は以下を確認）。
-- LINE に通知されない: `LINE_CHANNEL_ACCESS_TOKEN` / `LINE_TARGET_ID` の設定、公式アカウントの友だち追加状態を再確認。実行ログに `LINE への通知に失敗しました` が出ていないか確認。
-- LINE 401 Unauthorized: チャネルアクセストークンが不正または期限切れ。再発行してスクリプト プロパティを更新。
-- LINE 400 Bad Request: `LINE_TARGET_ID` が不正、または公式アカウントと友だち追加されていない。ID の種類（ユーザー / グループ / トークルーム）を確認。
-- LINE で届かない（エラーなし）: 無料枠の月 1,000 メッセージ上限に達していないか確認。
-- 通知が遅れてまとめて届く: LINE が 429 を返したときは 1 実行の 4 分予算で打ち切られ、残りは 5 分後の次回実行に回ります。実行ログに `実行時間予算 ... を使い切った` が出ます。
-- 既存ファイルまで通知された: `setConfig()` を再実行して `LAST_CHECK` を現在時刻に更新。
-- 通知頻度を上げたい: `installTrigger()` の間隔はコード上で `everyMinutes(5)` を変更可能（実行上限に注意）。
+- No notifications: run `validateSetup` first and check `ready` / `warnings` in the execution log. If `warnings` states the reason something is unset, fix it accordingly (if `ready` is `true` but nothing arrives, check the items below).
+- Nothing reaches LINE: recheck `LINE_CHANNEL_ACCESS_TOKEN` / `LINE_TARGET_ID` and whether the official account has been added as a friend. Check whether `LINE への通知に失敗しました` (failed to notify LINE) appears in the execution log.
+- LINE 401 Unauthorized: the channel access token is invalid or expired. Reissue it and update the script properties.
+- LINE 400 Bad Request: `LINE_TARGET_ID` is invalid, or the official account has not been added as a friend. Check the ID type (user / group / room).
+- Nothing arrives on LINE (no error): check whether you have reached the free tier's 1,000 messages per month.
+- Notifications arrive late and in a batch: when LINE returns 429, the run is cut off by the 4-minute budget and the rest goes to the next run 5 minutes later. `実行時間予算 ... を使い切った` (execution time budget ... exhausted) appears in the execution log.
+- Existing files were notified: run `setConfig()` again to update `LAST_CHECK` to the current time.
+- Want more frequent notifications: you can change `everyMinutes(5)` for the `installTrigger()` interval in the code (mind the execution quota).
