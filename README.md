@@ -6,7 +6,7 @@ A Google Apps Script project that sends push notifications via the LINE Messagin
 
 The full flow from setup through periodic scanning, notification, and state updates. Click the image to open the interactive version (theme switching / zoom / search / relationship tracing).
 
-[![ScanSnap Notifier workflow](docs/archify/scansnap-notifier-flow.capture.png)](docs/archify/scansnap-notifier-flow.html)
+[![ScanSnap Notifier workflow](docs/archify/scansnap-notifier-flow.png)](docs/archify/scansnap-notifier-flow.html)
 
 - [Interactive diagram (HTML)](docs/archify/scansnap-notifier-flow.html)
 - [Diagram spec (JSON)](docs/archify/scansnap-notifier-workflow.json) — regenerate: `archify deliver workflow docs/archify/scansnap-notifier-workflow.json docs/archify/scansnap-notifier-flow.html --quality showcase`
