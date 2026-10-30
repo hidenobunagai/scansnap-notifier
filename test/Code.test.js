@@ -234,4 +234,93 @@ describe("checkForNewFiles", () => {
     expect(get("PROCESSED_IDS")).toBe("[]");
     expect(get("LAST_CHECK")).toBe(base.LAST_CHECK);
   });
+
+  test("Drive 一覧取得が打ち切られた場合は例外なく終了し、LAST_CHECK は進めず取得分の PROCESSED_IDS を記録する", () => {
+    let driveCallCount = 0;
+    const list = stubFetch([resp(200)]);
+    const { api, get } = loadGas({
+      properties: { ...base, PROCESSED_IDS: "[]" },
+      files: () => {
+        driveCallCount++;
+        return {
+          files: [file(`f${driveCallCount}`)],
+          nextPageToken: `token-${driveCallCount + 1}`,
+        };
+      },
+      fetch: list.fetch,
+    });
+
+    api.checkForNewFiles();
+
+    expect(driveCallCount).toBe(20);
+    expect(get("LAST_CHECK")).toBe(base.LAST_CHECK);
+    const savedIds = JSON.parse(get("PROCESSED_IDS"));
+    expect(savedIds).toHaveLength(20);
+    expect(savedIds[0]).toBe("f1");
+    expect(savedIds[19]).toBe("f20");
+    expect(sentTexts(list.calls)).toHaveLength(20);
+  });
+});
+
+describe("listAllFiles", () => {
+  test("2〜3ページを正しく連結し truncated=false で全件返す", () => {
+    const page1 = [file("f1"), file("f2")];
+    const page2 = [file("f3")];
+    const page3 = [file("f4"), file("f5")];
+    const { api } = loadGas({
+      files: ({ pageToken }) => {
+        if (!pageToken) {
+          return { files: page1, nextPageToken: "token-p2" };
+        }
+        if (pageToken === "token-p2") {
+          return { files: page2, nextPageToken: "token-p3" };
+        }
+        if (pageToken === "token-p3") {
+          return { files: page3, nextPageToken: undefined };
+        }
+        return { files: [], nextPageToken: undefined };
+      },
+    });
+    const result = api.listAllFiles("test-query");
+    expect(result.truncated).toBe(false);
+    expect(result.files).toHaveLength(5);
+    expect(result.files.map((f) => f.id)).toEqual(["f1", "f2", "f3", "f4", "f5"]);
+  });
+
+  test("常に nextPageToken を返すスタブでは MAX_LIST_PAGES (20回) で止まり truncated=true になる", () => {
+    let callCount = 0;
+    const { api } = loadGas({
+      files: () => {
+        callCount++;
+        return {
+          files: [file(`f${callCount}`)],
+          nextPageToken: `token-${callCount + 1}`,
+        };
+      },
+    });
+    const result = api.listAllFiles("test-query");
+    expect(callCount).toBe(api.MAX_LIST_PAGES);
+    expect(result.truncated).toBe(true);
+    expect(result.files).toHaveLength(20);
+    expect(result.files[0].id).toBe("f1");
+    expect(result.files[19].id).toBe("f20");
+  });
+
+  test("実行時間予算 (deadline) を超過した場合は途中で打ち切って truncated=true になる", () => {
+    let callCount = 0;
+    const { api, clock } = loadGas({
+      files: () => {
+        callCount++;
+        clock.ms += 1000;
+        return {
+          files: [file(`f${callCount}`)],
+          nextPageToken: `token-${callCount + 1}`,
+        };
+      },
+    });
+    const result = api.listAllFiles("test-query", clock.ms + 1500);
+    expect(callCount).toBe(2);
+    expect(result.truncated).toBe(true);
+    expect(result.files).toHaveLength(2);
+  });
 });

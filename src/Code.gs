@@ -16,6 +16,8 @@ const MAX_RETRY_SLEEP_MS = 30 * 1000;
 // Wall-clock budget for one checkForNewFiles run. Stopping early leaves room before
 // the GAS 6-minute per-execution kill, which would skip the state save at the end.
 const MAX_RUN_MS = 4 * 60 * 1000;
+// Maximum pages to fetch from Drive per execution; pageSize 100 allows up to 2,000 files.
+const MAX_LIST_PAGES = 20;
 
 /**
  * One-time configuration.
@@ -57,11 +59,12 @@ function installTrigger() {
  * Concurrency: a script lock keeps overlapping triggers from running in parallel.
  * LAST_CHECK is captured BEFORE the Drive query so files created during the run
  *   are not silently skipped next time.
- * Budget: once the run passes MAX_RUN_MS the send loop breaks and is treated like
- *   a delivery failure, so the state below is still saved and the remaining files
+ * Budget: listing Drive files is capped at MAX_LIST_PAGES pages and startedAt + MAX_RUN_MS.
+ *   Once the run passes MAX_RUN_MS (in listing or sending), execution breaks and is treated
+ *   like a delivery failure, so the state below is still saved and the remaining files
  *   wait for the next run instead of being lost to the execution timeout.
- * Errors: LINE delivery failure logs the error and leaves LAST_CHECK untouched,
- *   so failed files are retried on the next run. Files from successfully delivered
+ * Errors: LINE delivery failure or listing truncation leaves LAST_CHECK untouched,
+ *   so unprocessed files are retried on the next run. Files from successfully delivered
  *   batches are recorded in PROCESSED_IDS to avoid duplicate notifications.
  */
 function checkForNewFiles() {
@@ -102,8 +105,12 @@ function checkForNewFiles() {
       }
     }
 
+    const startedAt = Date.now();
     const query = `('${folderId}' in parents) and trashed = false and createdTime > '${lastCheck}'`;
-    const newFiles = listAllFiles(query);
+    const { files: newFiles, truncated } = listAllFiles(query, startedAt + MAX_RUN_MS);
+    if (truncated) {
+      console.warn("Drive 一覧取得が途中で打ち切られたため、残りのファイルは次回実行に回します。");
+    }
 
     const pendingFiles = [];
     for (const f of newFiles) {
@@ -115,8 +122,7 @@ function checkForNewFiles() {
     // ponytail: Discord が削除され LINE 単独となったため、追加のカーソルを持たずに
     // 送信成功したバッチのみ PROCESSED_IDS に記録し、失敗時は LAST_CHECK を進めないことで
     // 最小限の状態管理で未送信ファイルの再送を実現する。
-    let hasFailure = false;
-    const startedAt = Date.now(); // Drive クエリ後のここから計る（クエリ時間も予算に含める）
+    let hasFailure = truncated;
     if (pendingFiles.length) {
       for (let i = 0; i < pendingFiles.length; i += 5) {
         if (Date.now() - startedAt > MAX_RUN_MS) {
@@ -158,12 +164,35 @@ function checkForNewFiles() {
 
 /**
  * Lists files matching the query, ordered by createdTime asc.
- * @returns {object[]}
+ * Stops pagination if page count reaches MAX_LIST_PAGES or Date.now() exceeds deadline.
+ *
+ * @param {string} q Drive search query
+ * @param {number} [deadline] Optional cutoff timestamp in milliseconds from Date.now()
+ * @returns {{ files: object[], truncated: boolean }}
  */
-function listAllFiles(q) {
+function listAllFiles(q, deadline) {
   const files = [];
   let pageToken;
+  let pageCount = 0;
+  let truncated = false;
   do {
+    if (pageCount >= MAX_LIST_PAGES) {
+      truncated = true;
+      console.warn(
+        "Drive 一覧取得がページ上限 (%d ページ) に達したため打ち切りました (取得件数: %d 件)。",
+        MAX_LIST_PAGES,
+        files.length,
+      );
+      break;
+    }
+    if (deadline && Date.now() > deadline) {
+      truncated = true;
+      console.warn(
+        "Drive 一覧取得が実行時間予算を超過したため打ち切りました (取得件数: %d 件)。",
+        files.length,
+      );
+      break;
+    }
     const resp = Drive.Files.list({
       q,
       orderBy: "createdTime asc",
@@ -171,10 +200,11 @@ function listAllFiles(q) {
       fields: "nextPageToken, files(id,name,createdTime,webViewLink,mimeType,size)",
       pageToken,
     });
+    pageCount++;
     if (resp && resp.files && resp.files.length) files.push(...resp.files);
-    pageToken = resp.nextPageToken;
+    pageToken = resp ? resp.nextPageToken : undefined;
   } while (pageToken);
-  return files;
+  return { files, truncated };
 }
 
 /**

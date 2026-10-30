@@ -17,6 +17,7 @@ The full flow from setup through periodic scanning, notification, and state upda
 - Scans every 5 minutes: a time-driven trigger runs every 5 minutes to detect new files.
 - Notifies LINE: sends the file name, creation time, size, and link as plain text.
 - Idempotency: keeps up to 200 recently processed file IDs.
+- Listing page limit: Drive file listing fetches up to 20 pages (2,000 files) per run; any truncated files are carried over to the next run.
 - Execution time budget: if a single run exceeds 4 minutes (`MAX_RUN_MS`), it stops sending, saves its state, and exits. The remainder is deferred to the next run, which prevents the GAS 6-minute limit from force-terminating the run and causing duplicate posts.
 
 ## Directory layout

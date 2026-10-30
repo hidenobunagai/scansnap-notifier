@@ -14,6 +14,7 @@ const EXPORTS = [
   "formatFileSize",
   "listAllFiles",
   "validateSetup",
+  "MAX_LIST_PAGES",
 ];
 
 /** UrlFetchApp の応答を模したオブジェクト */
