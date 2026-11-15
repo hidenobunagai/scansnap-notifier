@@ -25,6 +25,8 @@ export function resp(code, { headers = {}, text = "" } = {}) {
 /**
  * GAS のグローバルを差し替えて Code.gs を読み込む。
  * `fetch` は UrlFetchApp.fetch、`files` は Drive.Files.list の戻り値（呼び出しごとに変える場合は関数）。
+ * `folder` は Drive.Files.get の戻り値（オブジェクト、関数、または投げる Error）。
+ * `triggers` は ScriptApp.getProjectTriggers が返すハンドラ名文字列の配列。
  * `sleep` は Utilities.sleep、`log` は console.log / warn / error。
  * `now` は Date.now の初期値。仮想時計は Utilities.sleep のぶんだけ進み、渡した `sleep` が
  * throw した（= タイムアウトを模したもの）ときは進まない。返り値の `clock` で経過 ms を読める。
@@ -33,6 +35,13 @@ export function loadGas({
   properties = {},
   fetch,
   files = [],
+  folder = {
+    id: "folder",
+    name: "ScanSnap",
+    mimeType: "application/vnd.google-apps.folder",
+    trashed: false,
+  },
+  triggers = [],
   sleep = () => {},
   log = () => {},
   now = "2026-09-17T00:00:00.000Z",
@@ -50,12 +59,26 @@ export function loadGas({
       }),
     },
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
-    ScriptApp: { getProjectTriggers: () => [] },
+    ScriptApp: {
+      getProjectTriggers: () =>
+        triggers.map((name) =>
+          typeof name === "string" ? { getHandlerFunction: () => name } : name,
+        ),
+    },
     Drive: {
       Files: {
         list: typeof files === "function"
           ? files
           : () => ({ files, nextPageToken: undefined }),
+        get: (id, params) => {
+          if (typeof folder === "function") {
+            return folder(id, params);
+          }
+          if (folder instanceof Error) {
+            throw folder;
+          }
+          return folder;
+        },
       },
     },
     UrlFetchApp: {
@@ -72,9 +95,11 @@ export function loadGas({
   };
   const names = Object.keys(gas);
   // GAS の Date.now を仮想時計に差し替える。素 Date は傷つけず Date.now だけ差し替える
-  const clockedDate = Object.assign(function (...a) {
+  const clockedDate = function (...a) {
     return a.length ? new Date(...a) : new Date(clock.ms);
-  }, Date);
+  };
+  Object.setPrototypeOf(clockedDate, Date);
+  clockedDate.prototype = Date.prototype;
   clockedDate.now = () => clock.ms;
   const api = new Function(
     ...names,
