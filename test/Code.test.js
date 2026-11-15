@@ -324,3 +324,175 @@ describe("listAllFiles", () => {
     expect(result.files).toHaveLength(2);
   });
 });
+
+describe("validateSetup", () => {
+  const validProps = {
+    ...LINE_PROPS,
+    LAST_CHECK: "2026-09-17T00:00:00.000Z",
+    PROCESSED_IDS: "[]",
+  };
+  const validTriggers = ["checkForNewFiles"];
+
+  test("正常な設定では ready=true、warnings 空、triggerCount=1", () => {
+    const { api } = loadGas({
+      properties: validProps,
+      triggers: validTriggers,
+    });
+    const result = api.validateSetup();
+    expect(result.ready).toBe(true);
+    expect(result.warnings).toEqual([]);
+    expect(result.config.folderConfigured).toBe(true);
+    expect(result.config.folderAccessible).toBe(true);
+    expect(result.config.lineConfigured).toBe(true);
+    expect(result.config.triggerActive).toBe(true);
+    expect(result.config.triggerCount).toBe(1);
+    expect(result.config.lastCheck).toBe("2026-09-17T00:00:00.000Z");
+    expect(result.config.lastCheckValid).toBe(true);
+    expect(result.config.processedIdsValid).toBe(true);
+  });
+
+  test("LAST_CHECK 未設定で警告が入り ready=false", () => {
+    const { LAST_CHECK, ...propsWithoutLastCheck } = validProps;
+    const { api } = loadGas({
+      properties: propsWithoutLastCheck,
+      triggers: validTriggers,
+    });
+    const result = api.validateSetup();
+    expect(result.ready).toBe(false);
+    expect(result.config.lastCheck).toBeNull();
+    expect(result.config.lastCheckValid).toBe(false);
+    expect(result.warnings.some((w) => w.includes("LAST_CHECK が未設定"))).toBe(true);
+    expect(result.warnings.some((w) => w.includes("基準時刻が初期化"))).toBe(true);
+  });
+
+  test("LAST_CHECK 不正値で警告が入り ready=false", () => {
+    const { api } = loadGas({
+      properties: { ...validProps, LAST_CHECK: "invalid-date" },
+      triggers: validTriggers,
+    });
+    const result = api.validateSetup();
+    expect(result.ready).toBe(false);
+    expect(result.config.lastCheck).toBe("invalid-date");
+    expect(result.config.lastCheckValid).toBe(false);
+    expect(result.warnings.some((w) => w.includes("LAST_CHECK") && w.includes("壊れています"))).toBe(true);
+  });
+
+  test("LAST_CHECK 未来日時で警告が入り ready=false", () => {
+    const { api } = loadGas({
+      properties: { ...validProps, LAST_CHECK: "2026-09-17T00:10:00.000Z" },
+      triggers: validTriggers,
+      now: "2026-09-17T00:00:00.000Z",
+    });
+    const result = api.validateSetup();
+    expect(result.ready).toBe(false);
+    expect(result.config.lastCheckValid).toBe(false);
+    expect(result.warnings.some((w) => w.includes("未来") && w.includes("新しいファイルが検出されません"))).toBe(true);
+  });
+
+  test("PROCESSED_IDS 破損で警告が入り ready=false", () => {
+    const { api: api1 } = loadGas({
+      properties: { ...validProps, PROCESSED_IDS: "{bad json" },
+      triggers: validTriggers,
+    });
+    const res1 = api1.validateSetup();
+    expect(res1.ready).toBe(false);
+    expect(res1.config.processedIdsValid).toBe(false);
+    expect(res1.warnings.some((w) => w.includes("PROCESSED_IDS") && w.includes("二重通知"))).toBe(true);
+
+    const { api: api2 } = loadGas({
+      properties: { ...validProps, PROCESSED_IDS: '{"foo":"bar"}' },
+      triggers: validTriggers,
+    });
+    const res2 = api2.validateSetup();
+    expect(res2.ready).toBe(false);
+    expect(res2.config.processedIdsValid).toBe(false);
+    expect(res2.warnings.some((w) => w.includes("PROCESSED_IDS") && w.includes("二重通知"))).toBe(true);
+  });
+
+  test("PROCESSED_IDS 未設定の場合は processedIdsValid=true とみなされる", () => {
+    const { PROCESSED_IDS, ...propsWithoutProcessedIds } = validProps;
+    const { api } = loadGas({
+      properties: propsWithoutProcessedIds,
+      triggers: validTriggers,
+    });
+    const result = api.validateSetup();
+    expect(result.config.processedIdsValid).toBe(true);
+    expect(result.ready).toBe(true);
+  });
+
+  test("トリガー2件以上で重複警告が入り ready=false", () => {
+    const { api } = loadGas({
+      properties: validProps,
+      triggers: ["checkForNewFiles", "checkForNewFiles"],
+    });
+    const result = api.validateSetup();
+    expect(result.ready).toBe(false);
+    expect(result.config.triggerActive).toBe(true);
+    expect(result.config.triggerCount).toBe(2);
+    expect(result.warnings.some((w) => w.includes("重複実行の恐れ"))).toBe(true);
+  });
+
+  test("トリガー0件で未設定警告が入り ready=false", () => {
+    const { api } = loadGas({
+      properties: validProps,
+      triggers: [],
+    });
+    const result = api.validateSetup();
+    expect(result.ready).toBe(false);
+    expect(result.config.triggerActive).toBe(false);
+    expect(result.config.triggerCount).toBe(0);
+    expect(result.warnings.some((w) => w.includes("5分間隔のトリガーが未設定"))).toBe(true);
+  });
+
+  test("フォルダが trashed で警告が入り ready=false", () => {
+    const { api } = loadGas({
+      properties: validProps,
+      triggers: validTriggers,
+      folder: {
+        id: "folder",
+        name: "ScanSnap",
+        mimeType: "application/vnd.google-apps.folder",
+        trashed: true,
+      },
+    });
+    const result = api.validateSetup();
+    expect(result.ready).toBe(false);
+    expect(result.config.folderConfigured).toBe(true);
+    expect(result.config.folderAccessible).toBe(true);
+    expect(result.warnings.some((w) => w.includes("ゴミ箱"))).toBe(true);
+  });
+
+  test("フォルダ以外の mimeType で警告が入り ready=false", () => {
+    const { api } = loadGas({
+      properties: validProps,
+      triggers: validTriggers,
+      folder: {
+        id: "folder",
+        name: "scan.pdf",
+        mimeType: "application/pdf",
+        trashed: false,
+      },
+    });
+    const result = api.validateSetup();
+    expect(result.ready).toBe(false);
+    expect(result.config.folderConfigured).toBe(true);
+    expect(result.config.folderAccessible).toBe(true);
+    expect(result.warnings.some((w) => w.includes("フォルダ以外のアイテム"))).toBe(true);
+  });
+
+  test("Drive.Files.get が throw しても validateSetup は throw せず警告になる", () => {
+    const { api } = loadGas({
+      properties: validProps,
+      triggers: validTriggers,
+      folder: new Error("Google Drive API rate limit or permission error"),
+    });
+    let result;
+    expect(() => {
+      result = api.validateSetup();
+    }).not.toThrow();
+    expect(result.ready).toBe(false);
+    expect(result.config.folderConfigured).toBe(true);
+    expect(result.config.folderAccessible).toBe(false);
+    expect(result.warnings.some((w) => w.includes("アクセスできません"))).toBe(true);
+  });
+});

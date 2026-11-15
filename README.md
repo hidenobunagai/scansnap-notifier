@@ -91,7 +91,7 @@ After editing `src/Code.gs`, pass both `bun run check` and `bun test` (CI runs t
 - `installTrigger()`: maintains exactly one trigger that runs `checkForNewFiles` every 5 minutes
 - `checkForNewFiles()`: lists files created since the previous check via Drive v3 and notifies LINE. If a single run exceeds 4 minutes (`MAX_RUN_MS`), it stops sending, saves its state, and exits (the remainder is deferred to the next run)
 - `postToLine()`: sends a push to the LINE Messaging API (with 429/5xx retries, up to 5 messages per call; sleep per push is capped at `MAX_RETRY_SLEEP_MS` = 30 seconds)
-- `validateSetup()`: validates the script properties and trigger state and prints `ready` / `warnings` / `config` to the execution log (first-line diagnosis when notifications do not arrive)
+- `validateSetup()`: validates script properties, the baseline timestamp (`LAST_CHECK`), the processed ID state (`PROCESSED_IDS`), folder existence/permissions, and duplicate triggers to detect silent failures, printing `ready` / `warnings` / `config` to the execution log (first-line diagnosis when notifications do not arrive)
 
 ## Required permissions / scopes
 
@@ -128,7 +128,7 @@ These are already defined in `src/appsscript.json`. Drive v3 is enabled as an ad
 
 ## Troubleshooting
 
-- No notifications: run `validateSetup` first and check `ready` / `warnings` in the execution log. If `warnings` states the reason something is unset, fix it accordingly (if `ready` is `true` but nothing arrives, check the items below).
+- No notifications: run `validateSetup` first and check `ready` / `warnings` in the execution log. It diagnoses missing properties, invalid or future `LAST_CHECK` timestamps, corrupted `PROCESSED_IDS` state, inaccessible or trashed folders, and duplicate triggers. If `warnings` states any issue, fix it accordingly (if `ready` is `true` but nothing arrives, check the items below).
 - Nothing reaches LINE: recheck `LINE_CHANNEL_ACCESS_TOKEN` / `LINE_TARGET_ID` and whether the official account has been added as a friend. Check whether `LINE への通知に失敗しました` (failed to notify LINE) appears in the execution log.
 - LINE 401 Unauthorized: the channel access token is invalid or expired. Reissue it and update the script properties.
 - LINE 400 Bad Request: `LINE_TARGET_ID` is invalid, or the official account has not been added as a friend. Check the ID type (user / group / room).

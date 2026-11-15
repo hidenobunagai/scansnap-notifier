@@ -303,11 +303,26 @@ function validateSetup() {
 
   const props = PropertiesService.getScriptProperties();
 
-  // フォルダID
+  // フォルダIDとアクセス確認
   const folderId = (props.getProperty("FOLDER_ID") || "").trim();
   config.folderConfigured = !!folderId;
+  config.folderAccessible = false;
   if (!folderId) {
     warnings.push("FOLDER_ID が未設定です。setConfig() を実行してください。");
+  } else {
+    try {
+      const folder = Drive.Files.get(folderId, { fields: "id,name,mimeType,trashed" });
+      config.folderAccessible = true;
+      if (folder && folder.trashed) {
+        warnings.push("FOLDER_ID のフォルダがゴミ箱内にあります。");
+      }
+      if (folder && folder.mimeType !== "application/vnd.google-apps.folder") {
+        warnings.push("FOLDER_ID がフォルダ以外のアイテム (mimeType: " + folder.mimeType + ") を指しています。");
+      }
+    } catch (e) {
+      config.folderAccessible = false;
+      warnings.push("FOLDER_ID のフォルダにアクセスできません: " + (e && e.message ? e.message : String(e)));
+    }
   }
 
   // LINE設定
@@ -320,12 +335,49 @@ function validateSetup() {
     warnings.push("通知先が未設定です。LINE の設定を行ってください。");
   }
 
+  // 基準時刻 (LAST_CHECK)
+  const lastCheckRaw = props.getProperty("LAST_CHECK");
+  config.lastCheck = lastCheckRaw !== null && lastCheckRaw !== undefined && lastCheckRaw !== "" ? lastCheckRaw : null;
+  config.lastCheckValid = false;
+  if (!lastCheckRaw) {
+    warnings.push("LAST_CHECK が未設定です。次回実行時に基準時刻が初期化され、その間のファイルは通知されません。setConfig() を実行してください。");
+  } else {
+    const parsedTime = Date.parse(lastCheckRaw);
+    if (isNaN(parsedTime)) {
+      warnings.push("LAST_CHECK の日時形式が壊れています (" + lastCheckRaw + ")。setConfig() を再実行して初期化してください。");
+    } else if (parsedTime > Date.now() + 5 * 60 * 1000) {
+      warnings.push("LAST_CHECK が未来の日時 (" + lastCheckRaw + ") に設定されているため、新しいファイルが検出されません。setConfig() を再実行して初期化してください。");
+    } else {
+      config.lastCheckValid = true;
+    }
+  }
+
+  // PROCESSED_IDS の検証
+  const processedIdsRaw = props.getProperty("PROCESSED_IDS");
+  config.processedIdsValid = true;
+  if (processedIdsRaw !== null && processedIdsRaw !== undefined && processedIdsRaw !== "") {
+    try {
+      const parsedIds = JSON.parse(processedIdsRaw);
+      if (!Array.isArray(parsedIds)) {
+        config.processedIdsValid = false;
+        warnings.push("PROCESSED_IDS が配列形式ではなく破損しています。次回実行時にリセットされ二重通知が発生する恐れがあります。");
+      }
+    } catch (_) {
+      config.processedIdsValid = false;
+      warnings.push("PROCESSED_IDS の形式が破損しています。次回実行時にリセットされ二重通知が発生する恐れがあります。");
+    }
+  }
+
   // トリガー状態
   const triggers = ScriptApp.getProjectTriggers();
-  const hasTrigger = triggers.some(t => t.getHandlerFunction() === "checkForNewFiles");
-  config.triggerActive = hasTrigger;
-  if (!hasTrigger) {
+  const matchingTriggers = triggers.filter(t => t.getHandlerFunction() === "checkForNewFiles");
+  const triggerCount = matchingTriggers.length;
+  config.triggerCount = triggerCount;
+  config.triggerActive = triggerCount >= 1;
+  if (triggerCount === 0) {
     warnings.push("5分間隔のトリガーが未設定です。setConfig() を実行してください。");
+  } else if (triggerCount >= 2) {
+    warnings.push("checkForNewFiles のトリガーが " + triggerCount + " 件登録されています。重複実行の恐れがあるため、余分なトリガーを削除するか setConfig() を再実行してください。");
   }
 
   const result = { ready: warnings.length === 0, warnings: warnings, config: config };
